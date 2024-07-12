@@ -21,6 +21,9 @@ function safeReplace(klassName, methodName, overloads, newImplementation) {
     return false;
 }
 
+// Script creator name
+console.log("Script created by securitybong");
+
 // Bypass Root Detection
 var RootPackages = [
     "com.noshufou.android.su",
