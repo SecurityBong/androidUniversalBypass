@@ -1,4 +1,10 @@
+// Define the script creator name
+var scriptCreator = "SecurityBong";
+
 Java.perform(function() {
+    // Print script creator name
+    console.log("Script created by " + scriptCreator);
+
     // Root detection bypass
     var RootPackages = ["com.noshufou.android.su", "com.noshufou.android.su.elite", "eu.chainfire.supersu",
         "com.koushikdutta.superuser", "com.thirdparty.superuser", "com.yellowes.su", "com.koushikdutta.rommanager",
@@ -170,6 +176,7 @@ Java.perform(function() {
     });
 
     var TrustManagers = [TrustManagerImpl.$new()];
+
     var SSLContext_init = SSLContext.init.overload(
         '[Ljavax.net.ssl.KeyManager;', '[Ljavax.net.ssl.TrustManager;', 'java.security.SecureRandom'
     );
@@ -194,16 +201,83 @@ Java.perform(function() {
     };
 
     // RASP (Runtime Application Self-Protection) Bypass
-    var checkRASP = function() {
-        // Implement RASP bypass logic here
-        send('Implementing RASP Bypass');
-        return false; // Change this logic based on how RASP is implemented
-    };
+    function checkRASP() {
+        var result = false;
+        var moduleName = 'talsec';
+        var processes = Process.enumerateModulesSync();
+        for (var i = 0; i < processes.length; i++) {
+            var module = processes[i];
+            if (module['name'].toLowerCase().indexOf(moduleName) !== -1) {
+                result = true;
+                break;
+            }
+        }
+        moduleName = 'proguard';
+        for (var i = 0; i < processes.length; i++) {
+            var module = processes[i];
+            if (module['name'].toLowerCase().indexOf(moduleName) !== -1) {
+                result = true;
+                break;
+            }
+        }
+        moduleName = 'appsealing';
+        for (var i = 0; i < processes.length; i++) {
+            var module = processes[i];
+            if (module['name'].toLowerCase().indexOf(moduleName) !== -1) {
+                result = true;
+                break;
+            }
+        }
+        return result;
+    }
 
     if (checkRASP()) {
-        send('RASP check bypassed');
+        send('RASP bypassed');
     } else {
-        send('RASP check not bypassed');
+        send('RASP not bypassed');
+    }
+
+    // Google API Integrity Bypass
+    if (Java.available && Java.androidVersion >= 24) {
+        var GoogleAPI = Java.use('com.google.android.gms.common.GoogleApiAvailability');
+        GoogleAPI.isGooglePlayServicesAvailable.overload('android.content.Context').implementation = function(context) {
+            send('Bypassing Google API Integrity Check');
+            return 0;
+        };
+    } else {
+        send('Google API Integrity Check bypass not supported on this Android version');
+    }
+
+    // Debugger Detection Bypass
+    var Debug = Java.use('android.os.Debug');
+
+    Debug.isDebuggerConnected.implementation = function() {
+        send('Bypassing Debugger Detection');
+        return false;
+    };
+
+    // Anti-Frida Detection Bypass
+    function detectFrida() {
+        var result = false;
+        var moduleName = 'frida';
+
+        var processes = Process.enumerateModulesSync();
+        for (var i = 0; i < processes.length; i++) {
+            var module = processes[i];
+            if (module['name'].toLowerCase().indexOf(moduleName) !== -1) {
+                result = true;
+                break;
+            }
+        }
+
+        return result;
+    }
+
+    var isFridaDetected = detectFrida();
+    if (isFridaDetected) {
+        send('Frida detection bypassed');
+    } else {
+        send('Frida detection not bypassed');
     }
 
     function send(message) {
