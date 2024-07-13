@@ -1,257 +1,212 @@
-// Helper function to safely replace methods with error handling and detailed logging
-function safeReplace(klassName, methodName, overloads, newImplementation) {
-    try {
-        var klass = Java.use(klassName);
-        var method = klass[methodName];
-        if (method) {
-            var overloadedMethod = method.overload.apply(method, overloads);
-            if (overloadedMethod) {
-                overloadedMethod.implementation = newImplementation;
-                console.log("[+] Hook successfully replaced: " + klassName + "." + methodName);
-                return true;
-            } else {
-                console.log("[-] Overload not found: " + klassName + "." + methodName + "(" + overloads.join(", ") + ")");
-            }
-        } else {
-            console.log("[-] Method not found: " + klassName + "." + methodName);
+Java.perform(function() {
+    // Root detection bypass
+    var RootPackages = ["com.noshufou.android.su", "com.noshufou.android.su.elite", "eu.chainfire.supersu",
+        "com.koushikdutta.superuser", "com.thirdparty.superuser", "com.yellowes.su", "com.koushikdutta.rommanager",
+        "com.koushikdutta.rommanager.license", "com.dimonvideo.luckypatcher", "com.chelpus.lackypatch",
+        "com.ramdroid.appquarantine", "com.ramdroid.appquarantinepro", "com.devadvance.rootcloak", "com.devadvance.rootcloakplus",
+        "de.robv.android.xposed.installer", "com.saurik.substrate", "com.zachspong.temprootremovejb", "com.amphoras.hidemyroot",
+        "com.amphoras.hidemyrootadfree", "com.formyhm.hiderootPremium", "com.formyhm.hideroot", "me.phh.superuser",
+        "eu.chainfire.supersu.pro", "com.kingouser.com", "com.topjohnwu.magisk"
+    ];
+
+    var RootBinaries = ["su", "busybox", "supersu", "Superuser.apk", "KingoUser.apk", "SuperSu.apk", "magisk"];
+
+    var RootProperties = {
+        "ro.build.selinux": "1",
+        "ro.debuggable": "0",
+        "service.adb.root": "0",
+        "ro.secure": "1"
+    };
+
+    var RootPropertiesKeys = Object.keys(RootProperties);
+
+    var PackageManager = Java.use("android.app.ApplicationPackageManager");
+    var Runtime = Java.use('java.lang.Runtime');
+    var NativeFile = Java.use('java.io.File');
+    var String = Java.use('java.lang.String');
+    var SystemProperties = Java.use('android.os.SystemProperties');
+    var BufferedReader = Java.use('java.io.BufferedReader');
+    var ProcessBuilder = Java.use('java.lang.ProcessBuilder');
+    var StringBuffer = Java.use('java.lang.StringBuffer');
+
+    PackageManager.getPackageInfo.overload('java.lang.String', 'int').implementation = function(pname, flags) {
+        var shouldFakePackage = (RootPackages.indexOf(pname) > -1);
+        if (shouldFakePackage) {
+            send("Bypass root check for package: " + pname);
+            pname = "set.package.name.to.a.fake.one.so.we.can.bypass.it";
         }
-    } catch (e) {
-        console.log("[-] Failed to replace " + klassName + "." + methodName + ": " + e.message);
-    }
-    return false;
-}
+        return this.getPackageInfo.overload('java.lang.String', 'int').call(this, pname, flags);
+    };
 
-// Script creator name
-console.log("Script created by securitybong");
-
-// Bypass Root Detection
-var RootPackages = [
-    "com.noshufou.android.su",
-    "com.thirdparty.superuser",
-    "eu.chainfire.supersu",
-    "com.koushikdutta.superuser",
-    "com.zachspong.temprootremovejb",
-    "com.ramdroid.appquarantine"
-];
-
-var RootBinaries = [
-    "su", "busybox", "magisk"
-];
-
-var RootProperties = [
-    "ro.debuggable", "ro.secure", "ro.build.tags"
-];
-
-var RootFiles = [
-    "/system/app/Superuser.apk", 
-    "/sbin/su", 
-    "/system/bin/su", 
-    "/system/xbin/su", 
-    "/data/local/xbin/su", 
-    "/data/local/bin/su", 
-    "/system/sd/xbin/su", 
-    "/system/bin/failsafe/su", 
-    "/data/local/su"
-];
-
-RootPackages.forEach(function(packageName) {
-    var success = safeReplace("android.app.ApplicationPackageManager", 'getPackageInfo', ['java.lang.String', 'int'], function(pkg, flags) {
-        if (pkg === packageName) {
-            console.log("[!] Root package detected: " + pkg);
-            return null;
-        }
-        return this.getPackageInfo(pkg, flags);
-    });
-    if (!success) {
-        console.log("[-] Cannot bypass Root package detection for: " + packageName);
-    }
-});
-
-RootBinaries.forEach(function(binary) {
-    var success = safeReplace("java.lang.Runtime", 'exec', ['[Ljava.lang.String;'], function(args) {
-        for (var i = 0; i < args.length; i++) {
-            if (args[i].indexOf(binary) >= 0) {
-                console.log("[!] Root binary detected: " + binary);
-                args[i] = "invalid_command";
-            }
-        }
-        return this.exec(args);
-    });
-    if (!success) {
-        console.log("[-] Cannot bypass Root binary detection for: " + binary);
-    }
-});
-
-RootProperties.forEach(function(property) {
-    var success = safeReplace("android.os.SystemProperties", 'get', ['java.lang.String'], function(name) {
-        if (name === property) {
-            console.log("[!] Root property detected: " + property);
-            return "0";  // Return safe value
-        }
-        return this.get(name);
-    });
-    if (!success) {
-        console.log("[-] Cannot bypass Root property detection for: " + property);
-    }
-});
-
-RootFiles.forEach(function(filePath) {
-    var success = safeReplace("java.io.File", 'exists', [], function() {
-        if (this.getPath() === filePath) {
-            console.log("[!] Root file detected: " + filePath);
+    NativeFile.exists.implementation = function() {
+        var name = NativeFile.getName.call(this);
+        var shouldFakeReturn = (RootBinaries.indexOf(name) > -1);
+        if (shouldFakeReturn) {
+            send("Bypass return value for binary: " + name);
             return false;
+        } else {
+            return this.exists.call(this);
         }
-        return this.exists();
-    });
-    if (!success) {
-        console.log("[-] Cannot bypass Root file detection for: " + filePath);
-    }
-});
+    };
 
-// Bypass SSL Pinning
-try {
-    var sslPinningSuccess = safeReplace('okhttp3.CertificatePinner', 'check', ['java.lang.String', 'java.util.List'], function(a, b) {
-        console.log('[+] Bypassing SSL Pinning for: ' + a);
-        return;
-    });
-    if (!sslPinningSuccess) {
-        console.log('[-] Cannot bypass SSL Pinning');
-    }
-} catch (e) {
-    console.log("[-] SSL Pinning bypass failed: " + e.message);
-}
+    var exec = Runtime.exec.overload('[Ljava.lang.String;');
+    var exec1 = Runtime.exec.overload('java.lang.String');
+    var exec2 = Runtime.exec.overload('java.lang.String', '[Ljava.lang.String;');
+    var exec3 = Runtime.exec.overload('[Ljava.lang.String;', '[Ljava.lang.String;');
+    var exec4 = Runtime.exec.overload('[Ljava.lang.String;', '[Ljava.lang.String;', 'java.io.File');
+    var exec5 = Runtime.exec.overload('java.lang.String', '[Ljava.lang.String;', 'java.io.File');
 
-try {
-    var httpsURLConnectionSuccess = safeReplace('javax.net.ssl.HttpsURLConnection', 'setDefaultHostnameVerifier', ['javax.net.ssl.HostnameVerifier'], function(hostnameVerifier) {
-        console.log('[+] Bypassing SSL Pinning with HttpsURLConnection');
-        return;
-    });
-    if (!httpsURLConnectionSuccess) {
-        console.log('[-] Cannot bypass SSL Pinning with HttpsURLConnection');
-    }
-} catch (e) {
-    console.log("[-] SSL Pinning bypass failed: " + e.message);
-}
+    exec5.implementation = function(cmd, env, dir) {
+        if (cmd.indexOf("getprop") != -1 || cmd == "mount" || cmd.indexOf("build.prop") != -1 || cmd == "id" || cmd == "sh") {
+            var fakeCmd = "grep";
+            send("Bypass " + cmd + " command");
+            return exec1.call(this, fakeCmd);
+        }
+        if (cmd == "su") {
+            var fakeCmd = "justafakecommandthatcannotexistsusingthisshouldthowanexceptionwheneversuiscalled";
+            send("Bypass " + cmd + " command");
+            return exec1.call(this, fakeCmd);
+        }
+        return exec5.call(this, cmd, env, dir);
+    };
 
-// Bypass Biometric Checks
-try {
-    var biometricSuccess = safeReplace("android.hardware.fingerprint.FingerprintManager", 'authenticate', ['android.hardware.fingerprint.FingerprintManager$CryptoObject', 'android.os.CancellationSignal', 'int', 'android.hardware.fingerprint.FingerprintManager$AuthenticationCallback', 'android.os.Handler'], function(obj, cancel, flags, callback, handler) {
-        console.log("[+] Bypassing Biometric Authentication");
-        callback.onAuthenticationSucceeded(obj);
-    });
-    if (!biometricSuccess) {
-        console.log("[-] Cannot bypass Biometric Authentication");
-    }
-} catch (e) {
-    console.log("[-] Biometric check bypass failed: " + e.message);
-}
+    exec4.implementation = function(cmdarr, env, file) {
+        for (var i = 0; i < cmdarr.length; i = i + 1) {
+            var tmp_cmd = cmdarr[i];
+            if (tmp_cmd.indexOf("getprop") != -1 || tmp_cmd == "mount" || tmp_cmd.indexOf("build.prop") != -1 || tmp_cmd == "id" || tmp_cmd == "sh") {
+                var fakeCmd = "grep";
+                send("Bypass " + cmdarr + " command");
+                return exec1.call(this, fakeCmd);
+            }
 
-// Bypass Emulator Detection
-try {
-    var buildModelSuccess = safeReplace("android.os.Build", 'MODEL', [], function() {
-        console.log("[+] Bypassing Emulator Build.MODEL");
-        return "Pixel 3";
-    });
-    if (!buildModelSuccess) {
-        console.log("[-] Cannot bypass Emulator Build.MODEL");
-    }
-} catch (e) {
-    console.log("[-] Failed to bypass emulator Build.MODEL: " + e.message);
-}
+            if (tmp_cmd == "su") {
+                var fakeCmd = "justafakecommandthatcannotexistsusingthisshouldthowanexceptionwheneversuiscalled";
+                send("Bypass " + cmdarr + " command");
+                return exec1.call(this, fakeCmd);
+            }
+        }
+        return exec4.call(this, cmdarr, env, file);
+    };
 
-try {
-    var buildManufacturerSuccess = safeReplace("android.os.Build", 'MANUFACTURER', [], function() {
-        console.log("[+] Bypassing Emulator Build.MANUFACTURER");
-        return "Google";
-    });
-    if (!buildManufacturerSuccess) {
-        console.log("[-] Cannot bypass Emulator Build.MANUFACTURER");
-    }
-} catch (e) {
-    console.log("[-] Failed to bypass emulator Build.MANUFACTURER: " + e.message);
-}
+    exec3.implementation = function(cmdarr, envp) {
+        for (var i = 0; i < cmdarr.length; i = i + 1) {
+            var tmp_cmd = cmdarr[i];
+            if (tmp_cmd.indexOf("getprop") != -1 || tmp_cmd == "mount" || tmp_cmd.indexOf("build.prop") != -1 || tmp_cmd == "id" || tmp_cmd == "sh") {
+                var fakeCmd = "grep";
+                send("Bypass " + cmdarr + " command");
+                return exec1.call(this, fakeCmd);
+            }
 
-try {
-    var deviceIdSuccess = safeReplace('android.telephony.TelephonyManager', 'getDeviceId', [], function() {
-        console.log("[+] Bypassing Emulator Detection - Device ID");
-        return "012345678912345";
-    });
-    if (!deviceIdSuccess) {
-        console.log("[-] Cannot bypass Emulator Detection - Device ID");
-    }
-} catch (e) {
-    console.log("[-] Failed to bypass emulator detection - Device ID: " + e.message);
-}
+            if (tmp_cmd == "su") {
+                var fakeCmd = "justafakecommandthatcannotexistsusingthisshouldthowanexceptionwheneversuiscalled";
+                send("Bypass " + cmdarr + " command");
+                return exec1.call(this, fakeCmd);
+            }
+        }
+        return exec3.call(this, cmdarr, envp);
+    };
 
-try {
-    var subscriberIdSuccess = safeReplace('android.telephony.TelephonyManager', 'getSubscriberId', [], function() {
-        console.log("[+] Bypassing Emulator Detection - Subscriber ID");
-        return "310260000000000";
-    });
-    if (!subscriberIdSuccess) {
-        console.log("[-] Cannot bypass Emulator Detection - Subscriber ID");
-    }
-} catch (e) {
-    console.log("[-] Failed to bypass emulator detection - Subscriber ID: " + e.message);
-}
+    exec2.implementation = function(cmd, env) {
+        if (cmd.indexOf("getprop") != -1 || cmd == "mount" || cmd.indexOf("build.prop") != -1 || cmd == "id" || cmd == "sh") {
+            var fakeCmd = "grep";
+            send("Bypass " + cmd + " command");
+            return exec1.call(this, fakeCmd);
+        }
+        if (cmd == "su") {
+            var fakeCmd = "justafakecommandthatcannotexistsusingthisshouldthowanexceptionwheneversuiscalled";
+            send("Bypass " + cmd + " command");
+            return exec1.call(this, fakeCmd);
+        }
+        return exec2.call(this, cmd, env);
+    };
 
-// Bypass Debugger Detection
-try {
-    var debuggerSuccess = safeReplace('android.os.Debug', 'isDebuggerConnected', [], function() {
-        console.log("[+] Bypassing Debugger Detection");
-        return false;
-    });
-    if (!debuggerSuccess) {
-        console.log("[-] Cannot bypass Debugger Detection");
-    }
-} catch (e) {
-    console.log("[-] Failed to bypass debugger detection: " + e.message);
-}
+    exec.implementation = function(cmd) {
+        for (var i = 0; i < cmd.length; i = i + 1) {
+            var tmp_cmd = cmd[i];
+            if (tmp_cmd.indexOf("getprop") != -1 || tmp_cmd == "mount" || tmp_cmd.indexOf("build.prop") != -1 || tmp_cmd == "id" || tmp_cmd == "sh") {
+                var fakeCmd = "grep";
+                send("Bypass " + cmd + " command");
+                return exec1.call(this, fakeCmd);
+            }
 
-// Bypass RASP (Runtime Application Self-Protection)
-try {
-    var onResumeSuccess = safeReplace("android.app.Activity", 'onResume', [], function() {
-        console.log("[+] Bypassing RASP onResume");
-        this.onResume.call(this); // Ensure the superclass method is called
-    });
-    if (!onResumeSuccess) {
-        console.log("[-] Cannot bypass RASP onResume");
-    }
-} catch (e) {
-    console.log("[-] Failed to bypass RASP onResume: " + e.message);
-}
+            if (tmp_cmd == "su") {
+                var fakeCmd = "justafakecommandthatcannotexistsusingthisshouldthowanexceptionwheneversuiscalled";
+                send("Bypass " + cmd + " command");
+                return exec1.call(this, fakeCmd);
+            }
+        }
 
-try {
-    var getRunningAppProcessesSuccess = safeReplace('android.app.ActivityManager', 'getRunningAppProcesses', [], function() {
-        console.log("[+] Bypassing RASP getRunningAppProcesses");
-        return [];
-    });
-    if (!getRunningAppProcessesSuccess) {
-        console.log("[-] Cannot bypass RASP getRunningAppProcesses");
-    }
-} catch (e) {
-    console.log("[-] Failed to bypass RASP getRunningAppProcesses: " + e.message);
-}
+        return exec.call(this, cmd);
+    };
 
-// Bypass Anti-Frida
-try {
-    var openInterceptorSuccess = Interceptor.attach(Module.findExportByName(null, 'open'), {
-        onEnter: function(args) {
-            this.path = Memory.readCString(args[0]);
-        },
-        onLeave: function(retval) {
-            if (this.path.indexOf("frida") !== -1) {
-                console.log("[+] Bypassing Anti-Frida 'open' interceptor");
-                retval.replace(-1);
+    exec1.implementation = function(cmd) {
+        if (cmd.indexOf("getprop") != -1 || cmd == "mount" || cmd.indexOf("build.prop") != -1 || cmd == "id" || cmd == "sh") {
+            var fakeCmd = "grep";
+            send("Bypass " + cmd + " command");
+            return exec1.call(this, fakeCmd);
+        }
+        if (cmd == "su") {
+            var fakeCmd = "justafakecommandthatcannotexistsusingthisshouldthowanexceptionwheneversuiscalled";
+            send("Bypass " + cmd + " command");
+            return exec1.call(this, fakeCmd);
+        }
+        return exec1.call(this, cmd);
+    };
+
+    // SSL Pinning Bypass
+    var TrustManagerImpl = Java.use('javax.net.ssl.X509TrustManager');
+    var SSLContext = Java.use('javax.net.ssl.SSLContext');
+
+    var TrustManagerImpl = Java.registerClass({
+        name: 'com.example.TrustManagerImpl',
+        implements: [TrustManagerImpl],
+        methods: {
+            checkClientTrusted: function(chain, authType) {},
+            checkServerTrusted: function(chain, authType) {},
+            getAcceptedIssuers: function() {
+                return [];
             }
         }
     });
-    if (!openInterceptorSuccess) {
-        console.log("[-] Cannot bypass Anti-Frida 'open' interceptor");
-    }
-} catch (e) {
-    console.log("[-] Failed to bypass Anti-Frida 'open' interceptor: " + e.message);
-}
 
-// Log that Frida script execution has completed
-console.log("Frida script execution completed.");
+    var TrustManagers = [TrustManagerImpl.$new()];
+    var SSLContext_init = SSLContext.init.overload(
+        '[Ljavax.net.ssl.KeyManager;', '[Ljavax.net.ssl.TrustManager;', 'java.security.SecureRandom'
+    );
+
+    SSLContext_init.implementation = function(keyManager, trustManager, secureRandom) {
+        send('Bypassing SSL Pinning');
+        SSLContext_init.call(this, keyManager, TrustManagers, secureRandom);
+    };
+
+    // Biometric Authentication Bypass
+    var FingerprintManager = Java.use('android.hardware.fingerprint.FingerprintManager');
+    var CancellationSignal = Java.use('android.os.CancellationSignal');
+
+    FingerprintManager.authenticate.overload(
+        'android.hardware.fingerprint.FingerprintManager$CryptoObject',
+        'android.os.CancellationSignal',
+        'int',
+        'android.hardware.fingerprint.FingerprintManager$AuthenticationCallback',
+        'android.os.Handler'
+    ).implementation = function(cryptoObject, cancel, flags, callback, handler) {
+        send('Bypassing Biometric Authentication');
+    };
+
+    // RASP (Runtime Application Self-Protection) Bypass
+    var checkRASP = function() {
+        // Implement RASP bypass logic here
+        send('Implementing RASP Bypass');
+        return false; // Change this logic based on how RASP is implemented
+    };
+
+    if (checkRASP()) {
+        send('RASP check bypassed');
+    } else {
+        send('RASP check not bypassed');
+    }
+
+    function send(message) {
+        console.log(message);
+    }
+});
