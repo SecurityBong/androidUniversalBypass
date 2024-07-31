@@ -7,5 +7,7 @@ Please do not misuse anything with this script. Please ensure this script is use
 If anything happens, GitHub and I will not be held responsible.
 
 v1.0 --> normal powerfull script.
+
 v1.1 --> added some modules to bypass root and SSL pinning.
+
 v1.2 --> added some more modules to bypass root and SSL pinning.
