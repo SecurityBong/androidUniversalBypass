@@ -12,4 +12,4 @@ v1.1 --> added some modules to bypass root and SSL pinning.
 
 v1.2 --> added some more modules to bypass root.
 
-v1.3 --> added some moooore modules to bypass root and SSL pinning.
+v1.3 --> added some moooore modules to bypass SSL pinning.
