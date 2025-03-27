@@ -102,7 +102,7 @@ Java.perform(function () {
         "eu.chainfire.supersu.pro", "com.kingouser.com", "com.topjohnwu.magisk"
             ];
 
-            var rootBinaries = ["su", "busybox", "magisk"];
+            var rootBinaries = ["su", "busybox", "supersu", "Superuser.apk", "KingoUser.apk", "SuperSu.apk", "magisk"];
 
             // Package manager hooks
             safeUse("android.app.ApplicationPackageManager", function(PackageManager) {
