@@ -4,7 +4,7 @@ var scriptCreator = "SecurityBong";
 Java.perform(function () {
     function send(message) {
         console.log(message);
-    }
+    }}
 
     // --------------------- Root Detection Bypass ---------------------
     var System = Java.use("java.lang.System");
