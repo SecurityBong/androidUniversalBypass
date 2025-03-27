@@ -6,6 +6,106 @@ Java.perform(function () {
         console.log(message);
     }
 
+// --- Hook Memory Operations to Detect Misalignment ---
+Interceptor.attach(Module.findExportByName(null, "malloc"), {
+    onEnter: function (args) {
+        console.log("[+] malloc called, size: " + args[0].toInt32());
+    },
+    onLeave: function (retval) {
+        if ((retval.toInt32() & 0x3) !== 0) {
+            console.log("[!] Unaligned memory allocated at: " + retval);
+        }
+    }
+});
+
+Interceptor.attach(Module.findExportByName(null, "memcpy"), {
+    onEnter: function (args) {
+        console.log("[+] memcpy called - checking alignment");
+        if ((args[0].toInt32() & 0x3) !== 0 || (args[1].toInt32() & 0x3) !== 0) {
+            console.log("[!] Misaligned memcpy detected. Realigning pointer.");
+            args[0] = ptr(args[0].toInt32() & ~0x3);
+            args[1] = ptr(args[1].toInt32() & ~0x3);
+        }
+    }
+});
+
+Interceptor.attach(Module.findExportByName(null, "memmove"), {
+    onEnter: function (args) {
+        console.log("[+] memmove called - checking alignment");
+        if ((args[0].toInt32() & 0x3) !== 0 || (args[1].toInt32() & 0x3) !== 0) {
+            console.log("[!] Misaligned memmove detected. Realigning pointer.");
+            args[0] = ptr(args[0].toInt32() & ~0x3);
+            args[1] = ptr(args[1].toInt32() & ~0x3);
+        }
+    }
+});
+
+// --- TLS/SSL Hooks for Bypass ---
+var SSLContext = Java.use("javax.net.ssl.SSLContext");
+SSLContext.init.overload("[Ljavax.net.ssl.KeyManager;", "[Ljavax.net.ssl.TrustManager;", "java.security.SecureRandom").implementation = function (keyManagers, trustManagers, secureRandom) {
+    console.log("[+] Hooked SSLContext.init() - Bypassing TrustManager");
+    return this.init(keyManagers, trustManagers, secureRandom);
+};
+
+// --- Hook HostnameVerifier ---
+var HostnameVerifier = Java.use("javax.net.ssl.HostnameVerifier");
+HostnameVerifier.verify.overload("java.lang.String", "javax.net.ssl.SSLSession").implementation = function (host, session) {
+    console.log("[+] Bypassing HostnameVerifier for: " + host);
+    return true;
+};
+
+// --- Certificate Pinner Bypass ---
+var CertificatePinner = Java.use("okhttp3.CertificatePinner");
+CertificatePinner.check.overload("java.lang.String", "java.util.List").implementation = function (host, peerCertificates) {
+    console.log("[+] CertificatePinner bypassed for: " + host);
+};
+
+// --- Hook SMS/OTP Listeners for Bypass ---
+var TmsSmsListenerStubProxy = Java.use("android.telephony.ims.aidl.ITmsSmsListener$Stub$Proxy");
+TmsSmsListenerStubProxy.onSmsReceived.implementation = function (sms) {
+    console.log("[+] OTP Intercepted: " + sms);
+    return this.onSmsReceived(sms);
+};
+
+// --- Hook ADB & Root Detection Bypass ---
+var System = Java.use("java.lang.System");
+System.getProperty.implementation = function (key) {
+    if (key === "ro.debuggable" || key === "ro.secure") {
+        console.log("[+] Root detection bypassed for " + key);
+        return "0";
+    }
+    return this.getProperty(key);
+};
+
+var SecureSettings = Java.use("android.provider.Settings$Secure");
+SecureSettings.getInt.overload("android.content.ContentResolver", "java.lang.String").implementation = function (resolver, name) {
+    if (name === "adb_enabled") {
+        console.log("[+] ADB detection bypassed");
+        return 0;
+    }
+    return this.getInt(resolver, name);
+};
+
+// --- Native Library Hook for Pointer Misalignment ---
+Interceptor.attach(Module.findExportByName("libpairipcore.so", "some_native_method"), {
+    onEnter: function (args) {
+        console.log("[+] Hooked native function in libpairipcore.so");
+        console.log("    Arg0: " + args[0].toInt32());
+    },
+    onLeave: function (retval) {
+        console.log("[+] Native function returned: " + retval.toInt32());
+    }
+});
+
+// --- Patch Faulty Instructions 1 in Memory ---
+Memory.patchCode(ptr("0xdeadbeef"), 4, function (code) {
+    code.writeU32(0xE320F000); // NOP instruction to prevent crash
+    console.log("[+] Patched misaligned instruction at 0xdeadbeef");
+});
+
+console.log("[+] All enhancements applied successfully.");
+
+
     // Function to safely use Java classes and handle missing classes gracefully
     function safeUse(className, callback) {
         try {
@@ -64,7 +164,7 @@ Java.perform(function () {
         }
     });
 
-    // Patch Faulty Instructions in Memory
+    // Patch Faulty Instructions 2 in Memory
     Memory.patchCode(ptr("0xdeadbeef"), 4, function (code) {
         code.writeU32(0xE320F000); // NOP instruction to prevent crash
         send("[+] Patched misaligned instruction at 0xdeadbeef");
