@@ -2,28 +2,6 @@
 // Created by SecurityBong
 // Enhanced with comprehensive error handling
 
-// Global variables and functions
-var scriptCreator = "SecurityBong";
-
-// Unified logging system with multiple fallbacks
-function globalLog(message) {
-    try {
-        console.log(message);
-    } catch (e) {
-        try {
-            Java.perform(function() {
-                Java.use("android.util.Log").d("UniversalBypass", message);
-            });
-        } catch (e2) {
-            try {
-                send(message);
-            } catch (e3) {
-                // Ultimate fallback if everything fails
-            }
-        }
-    }
-}
-
 var config = {
     debugMode: true,
     targetLibs: ["libpairipcore.so", "libssl.so"],
@@ -235,7 +213,7 @@ function bypassRASP() {
 // SCRIPT INITIALIZATION
 // ========================
 Java.perform(function() {
-    logger.log("=== Universal Bypass v2.0 Starting ===");
+    logger.log("=== SecurityBong Android Universal Bypass Starting ===");
     
     try {
         bypassRootDetection();
