@@ -5,9 +5,6 @@ Java.perform(function () {
     function send(message) {
         console.log(message);
     }
-// Android Universal Bypass v1.7 - Enhanced with libpairipcore.so Patching
-Java.perform(function () {
-    console.log("[+] Android Universal Bypass v1.7 Loaded");
 
     // --------------------- Root Detection Bypass ---------------------
     var System = Java.use("java.lang.System");
