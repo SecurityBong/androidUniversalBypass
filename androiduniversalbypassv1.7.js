@@ -1,5 +1,4 @@
-// Universal Android Bypass Script v1.9 (Guaranteed Working Version)
-// Combines working v1.6 bypasses with v1.7 improvements
+// Universal Android Bypass Script v1.7
 // Enhanced with immediate execution and comprehensive protection
 
 // ========================
