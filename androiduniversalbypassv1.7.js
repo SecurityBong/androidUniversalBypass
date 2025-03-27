@@ -24,292 +24,243 @@ function globalLog(message) {
     }
 }
 
-// Main execution block
-Java.perform(function () {
-    // Local logging function with context-specific fallbacks
-    function log(message) {
-        try {
-            console.log(message);
-        } catch (e) {
-            try {
-                Java.use("android.util.Log").d("UniversalBypass", message);
-            } catch (e2) {
-                globalLog(message);
-            }
-        }
-    }
+var config = {
+    debugMode: true,
+    targetLibs: ["libpairipcore.so", "libssl.so"],
+    rootPackages: [
+        "com.noshufou.android.su", "eu.chainfire.supersu",
+        "com.koushikdutta.superuser", "com.kingouser.com",
+        "com.topjohnwu.magisk"
+    ],
+    rootBinaries: ["su", "busybox", "magisk"]
+};
 
-    // Safe Java class usage with error handling
-    function safeUse(className, callback) {
+// ========================
+// LOGGING SYSTEM
+// ========================
+var logger = (function() {
+    function logToConsole(message) {
+        console.log(message);
+    }
+    
+    function logToAndroid(message) {
+        Java.perform(function() {
+            Java.use("android.util.Log").d("UniversalBypass", message);
+        });
+    }
+    
+    function logToFrida(message) {
         try {
-            var clazz = Java.use(className);
-            callback(clazz);
-            return true;
-        } catch (err) {
-            log("[!] Class " + className + " not present: " + err);
+            if (typeof send !== 'undefined') {
+                send(message);
+                return true;
+            }
+            return false;
+        } catch (e) {
             return false;
         }
     }
-
-    log("Script initialized - Universal Bypass v1.7 by " + scriptCreator);
-
-    /* ==================== */
-    /*  ROOT DETECTION BYPASS */
-    /* ==================== */
-    function bypassRootDetection() {
-        try {
-            // System property spoofing
-            safeUse("java.lang.System", function(System) {
-                System.getProperty.implementation = function(key) {
-                    try {
-                        if (key === "ro.debuggable" || key === "ro.secure") {
-                            log("[+] Spoofing system property: " + key);
-                            return "0";
-                        }
-                        return this.getProperty(key);
-                    } catch (e) {
-                        log("[!] Error in getProperty: " + e);
-                        return this.getProperty(key);
-                    }
-                };
-            });
-
-            // Secure settings spoofing
-            safeUse("android.provider.Settings$Secure", function(SecureSettings) {
-                SecureSettings.getInt.overload("android.content.ContentResolver", "java.lang.String")
-                    .implementation = function(resolver, name) {
-                    try {
-                        if (name === "adb_enabled") {
-                            log("[+] Spoofing ADB enabled status");
-                            return 0;
-                        }
-                        return this.getInt(resolver, name);
-                    } catch (e) {
-                        log("[!] Error in getInt: " + e);
-                        return this.getInt(resolver, name);
-                    }
-                };
-            });
-
-            // Root package/binary detection bypass
-            var rootPackages = [
-                "com.noshufou.android.su", "com.noshufou.android.su.elite", "eu.chainfire.supersu",
-        "com.koushikdutta.superuser", "com.thirdparty.superuser", "com.yellowes.su", "com.koushikdutta.rommanager",
-        "com.koushikdutta.rommanager.license", "com.dimonvideo.luckypatcher", "com.chelpus.lackypatch",
-        "com.ramdroid.appquarantine", "com.ramdroid.appquarantinepro", "com.devadvance.rootcloak", "com.devadvance.rootcloakplus",
-        "de.robv.android.xposed.installer", "com.saurik.substrate", "com.zachspong.temprootremovejb", "com.amphoras.hidemyroot",
-        "com.amphoras.hidemyrootadfree", "com.formyhm.hiderootPremium", "com.formyhm.hideroot", "me.phh.superuser",
-        "eu.chainfire.supersu.pro", "com.kingouser.com", "com.topjohnwu.magisk"
-            ];
-
-            var rootBinaries = ["su", "busybox", "supersu", "Superuser.apk", "KingoUser.apk", "SuperSu.apk", "magisk"];
-
-            // Package manager hooks
-            safeUse("android.app.ApplicationPackageManager", function(PackageManager) {
-                PackageManager.getPackageInfo.overload('java.lang.String', 'int')
-                    .implementation = function(pname, flags) {
-                    try {
-                        if (rootPackages.includes(pname)) {
-                            log("[+] Bypassing root package check: " + pname);
-                            pname = "com.android.vending"; // Spoof as Play Store
-                        }
-                        return this.getPackageInfo(pname, flags);
-                    } catch (e) {
-                        log("[!] Error in getPackageInfo: " + e);
-                        return this.getPackageInfo(pname, flags);
-                    }
-                };
-            });
-
-            // File existence checks
-            safeUse("java.io.File", function(NativeFile) {
-                NativeFile.exists.implementation = function() {
-                    try {
-                        var name = this.getName();
-                        if (rootBinaries.includes(name)) {
-                            log("[+] Bypassing binary check: " + name);
-                            return false;
-                        }
-                        return this.exists();
-                    } catch (e) {
-                        log("[!] Error in exists: " + e);
-                        return this.exists();
-                    }
-                };
-            });
-
-            // Command execution hooks
-            safeUse("java.lang.Runtime", function(Runtime) {
-                var execOverloads = [
-                    Runtime.exec.overload('[Ljava.lang.String;'),
-                    Runtime.exec.overload('java.lang.String')
-                ];
-
-                execOverloads.forEach(function(exec) {
-                    exec.implementation = function() {
-                        try {
-                            var cmd = arguments[0];
-                            var cmdStr = Array.isArray(cmd) ? cmd.join(" ") : cmd.toString();
-                            
-                            if (cmdStr.includes("su") || cmdStr.includes("magisk") || 
-                               cmdStr.includes("getprop") || cmdStr.includes("mount")) {
-                                log("[+] Bypassing command: " + cmdStr);
-                                return Runtime.getRuntime().exec("echo bypassed");
-                            }
-                            return exec.apply(this, arguments);
-                        } catch (e) {
-                            log("[!] Error in exec: " + e);
-                            return exec.apply(this, arguments);
-                        }
-                    };
-                });
-            });
-
-            log("[√] Root detection bypass complete");
-        } catch (e) {
-            log("[X] Root detection bypass failed: " + e);
-        }
-    }
-
-    /* ==================== */
-    /*  SSL PINNING BYPASS  */
-    /* ==================== */
-    function bypassSSLPinning() {
-        try {
-            // X509TrustManager bypass
-            safeUse("javax.net.ssl.X509TrustManager", function(X509TrustManager) {
-                X509TrustManager.checkServerTrusted.implementation = function() {
-                    log("[+] Bypassing SSL certificate validation");
-                };
-            });
-
-            // HostnameVerifier bypass
-            safeUse("javax.net.ssl.HostnameVerifier", function(HostnameVerifier) {
-                HostnameVerifier.verify.implementation = function() {
-                    log("[+] Bypassing hostname verification");
-                    return true;
-                };
-            });
-
-            // Custom TrustManager
+    
+    return {
+        log: function(message) {
             try {
-                var X509TrustManager = Java.use('javax.net.ssl.X509TrustManager');
-                Java.registerClass({
-                    name: 'com.example.CustomTrustManager',
-                    implements: [X509TrustManager],
-                    methods: {
-                        checkClientTrusted: function() {},
-                        checkServerTrusted: function() {},
-                        getAcceptedIssuers: function() { return []; }
+                if (config.debugMode) {
+                    if (!logToFrida(message)) {
+                        if (!logToConsole(message)) {
+                            logToAndroid(message);
+                        }
                     }
-                });
-
-                safeUse('javax.net.ssl.SSLContext', function(SSLContext) {
-                    SSLContext.init.implementation = function() {
-                        log("[+] Overriding SSLContext with custom TrustManager");
-                        var CustomTrustManager = Java.use('com.example.CustomTrustManager');
-                        this.init(arguments[0], [CustomTrustManager.$new()], arguments[2]);
-                    };
-                });
+                }
             } catch (e) {
-                log("[!] Custom TrustManager failed: " + e);
+                // Last resort
+                console.log("[FALLBACK] " + message);
             }
+        }
+    };
+})();
 
-            // OkHTTP3 bypass
-            safeUse('okhttp3.CertificatePinner', function(CertificatePinner) {
-                CertificatePinner.check.overload('java.lang.String', 'java.util.List')
-                    .implementation = function() {
-                    log("[+] Bypassing OkHTTP certificate pinning");
-                };
-            });
+// ========================
+// UTILITY FUNCTIONS
+// ========================
+function safeUse(className, callback) {
+    try {
+        var clazz = Java.use(className);
+        callback(clazz);
+        return true;
+    } catch (err) {
+        logger.log("[!] Class " + className + " not present: " + err);
+        return false;
+    }
+}
 
-            // Native SSL bypass
-            try {
-                var sslVerify = Module.findExportByName("libssl.so", "SSL_verify");
-                if (sslVerify) {
-                    Interceptor.attach(sslVerify, {
+function hookAllExports(libName) {
+    try {
+        var moduleBase = Module.findBaseAddress(libName);
+        if (!moduleBase) {
+            logger.log("[!] Library not loaded: " + libName);
+            return false;
+        }
+
+        Module.enumerateExports(libName).forEach(function(exp) {
+            if (exp.type === 'function') {
+                try {
+                    Interceptor.attach(exp.address, {
                         onEnter: function(args) {
-                            log("[+] Bypassing native SSL verification");
-                            args[0] = 0;
+                            logger.log("[+] Called " + exp.name + " in " + libName);
+                        },
+                        onLeave: function(retval) {
+                            // Optional return value logging
                         }
                     });
+                } catch (e) {
+                    logger.log("[!] Failed to hook " + exp.name + ": " + e);
                 }
-            } catch (e) {
-                log("[!] Native SSL bypass failed: " + e);
             }
-
-            log("[√] SSL pinning bypass complete");
-        } catch (e) {
-            log("[X] SSL pinning bypass failed: " + e);
-        }
+        });
+        return true;
+    } catch (e) {
+        logger.log("[X] Error hooking exports for " + libName + ": " + e);
+        return false;
     }
+}
 
-    /* ==================== */
-    /*  RASP PROTECTION BYPASS */
-    /* ==================== */
-    function bypassRASP() {
-        var raspProviders = [
-            { name: 'Talsec', class: 'com.talsec.security.Talsec' },
-            { name: 'RootBeer', class: 'com.scottyab.rootbeer.RootBeer' }
+// ========================
+// MAIN BYPASS FUNCTIONS
+// ========================
+function bypassRootDetection() {
+    // System property spoofing
+    safeUse("java.lang.System", function(System) {
+        System.getProperty.implementation = function(key) {
+            if (key === "ro.debuggable" || key === "ro.secure") {
+                logger.log("[+] Spoofing property: " + key);
+                return "0";
+            }
+            return this.getProperty(key);
+        };
+    });
+
+    // Package manager hooks
+    safeUse("android.app.ApplicationPackageManager", function(PackageManager) {
+        PackageManager.getPackageInfo.overload('java.lang.String', 'int')
+            .implementation = function(pname, flags) {
+            if (config.rootPackages.includes(pname)) {
+                logger.log("[+] Bypassing package check: " + pname);
+                pname = "com.android.vending"; // Spoof as Play Store
+            }
+            return this.getPackageInfo(pname, flags);
+        };
+    });
+
+    // Command execution hooks
+    safeUse("java.lang.Runtime", function(Runtime) {
+        var execOverloads = [
+            Runtime.exec.overload('[Ljava.lang.String;'),
+            Runtime.exec.overload('java.lang.String')
         ];
 
-        try {
-            // Module detection
-            Process.enumerateModulesSync().forEach(function(module) {
-                if (/talsec|rootbeer|appsealing/i.test(module.name)) {
-                    log("[+] Detected RASP module: " + module.name);
+        execOverloads.forEach(function(exec) {
+            exec.implementation = function() {
+                var cmd = arguments[0];
+                var cmdStr = Array.isArray(cmd) ? cmd.join(" ") : cmd.toString();
+                
+                if (/su|magisk|getprop|mount/.test(cmdStr)) {
+                    logger.log("[+] Bypassing command: " + cmdStr);
+                    return Runtime.getRuntime().exec("echo bypassed");
                 }
-            });
+                return exec.apply(this, arguments);
+            };
+        });
+    });
 
-            // Provider-specific bypasses
-            raspProviders.forEach(function(provider) {
-                safeUse(provider.class, function(clazz) {
-                    if (clazz.isRooted) {
-                        clazz.isRooted.implementation = function() {
-                            log("[+] Bypassing " + provider.name + " root check");
-                            return false;
-                        };
-                    }
-                    if (clazz.checkHook) {
-                        clazz.checkHook.implementation = function() {
-                            log("[+] Bypassing " + provider.name + " hook detection");
-                            return false;
-                        };
+    logger.log("[√] Root detection bypass complete");
+}
+
+function bypassSSLPinning() {
+    // Java-layer bypass
+    safeUse("javax.net.ssl.X509TrustManager", function(X509TrustManager) {
+        X509TrustManager.checkServerTrusted.implementation = function() {
+            logger.log("[+] Bypassing SSL validation");
+        };
+    });
+
+    // Native-layer bypass
+    config.targetLibs.forEach(function(lib) {
+        if (lib === "libssl.so") {
+            var sslVerify = Module.findExportByName(lib, "SSL_verify");
+            if (sslVerify) {
+                Interceptor.attach(sslVerify, {
+                    onEnter: function(args) {
+                        logger.log("[+] Bypassing native SSL");
+                        args[0] = 0;
                     }
                 });
-            });
-
-            log("[√] RASP protection bypass complete");
-        } catch (e) {
-            log("[X] RASP bypass failed: " + e);
+            }
         }
-    }
+    });
 
-    /* ==================== */
-    /*  MAIN EXECUTION FLOW */
-    /* ==================== */
+    logger.log("[√] SSL pinning bypass complete");
+}
+
+function bypassRASP() {
+    var raspProviders = [
+        { name: 'Talsec', class: 'com.talsec.security.Talsec' },
+        { name: 'RootBeer', class: 'com.scottyab.rootbeer.RootBeer' }
+    ];
+
+    // Module detection
+    Process.enumerateModulesSync().forEach(function(module) {
+        if (/talsec|rootbeer|appsealing/i.test(module.name)) {
+            logger.log("[+] Detected RASP: " + module.name);
+        }
+    });
+
+    // Provider bypasses
+    raspProviders.forEach(function(provider) {
+        safeUse(provider.class, function(clazz) {
+            ['isRooted', 'checkHook', 'checkEmulator'].forEach(function(method) {
+                if (clazz[method]) {
+                    clazz[method].implementation = function() {
+                        logger.log("[+] Bypassing " + provider.name + " " + method);
+                        return false;
+                    };
+                }
+            });
+        });
+    });
+
+    logger.log("[√] RASP protection bypass complete");
+}
+
+// ========================
+// SCRIPT INITIALIZATION
+// ========================
+Java.perform(function() {
+    logger.log("=== Universal Bypass v2.0 Starting ===");
+    
     try {
-        log("[*] Starting bypass procedures...");
         bypassRootDetection();
         bypassSSLPinning();
         bypassRASP();
-        log("[√] All bypass procedures completed successfully");
+        
+        // Hook target libraries
+        config.targetLibs.forEach(function(lib) {
+            if (hookAllExports(lib)) {
+                logger.log("[√] Hooks installed for " + lib);
+            }
+        });
+        
+        logger.log("[√] All bypasses completed successfully");
     } catch (e) {
-        log("[X] Critical error in main execution: " + e);
+        logger.log("[X] Critical error: " + e);
     }
 });
 
-// Global send function for Frida compatibility
-function send(message) {
-    try {
-        console.log(message);
-    } catch (e) {
-        try {
-            Java.perform(function() {
-                Java.use("android.util.Log").d("UniversalBypass", message);
-            });
-        } catch (e2) {
-            // Final fallback
-        }
-    }
+// ========================
+// FRIDA COMPATIBILITY
+// ========================
+if (typeof send === 'undefined') {
+    // Provide dummy send if not in Frida
+    var send = function(message) {
+        console.log("[FRIDA] " + message);
+    };
 }
