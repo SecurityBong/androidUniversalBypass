@@ -20,4 +20,4 @@ v1.5 --> v1.4 + added some modules of everything + experiment is going on.
 
 v1.6 --> v1.5 + added some modules of ssl pinning if portswigger certificate gets blocked by server.
 
-v1.7 --> experimenting
+v1.7 --> v1.6 + experimenting
