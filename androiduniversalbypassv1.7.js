@@ -233,10 +233,10 @@ function bypassRASP() {
 // MAIN EXECUTION
 // ========================
 Java.perform(function() {
-    logger.log("=== Starting Universal Bypass v2.1 ===");
+    logger.log("=== Starting Universal Bypass v1.7 ===");
     
     try {
-        // 1. First bypass application context checks (critical for IndusInd)
+        // 1. First bypass application context checks
         bypassAppContextChecks();
         
         // 2. Standard bypasses
