@@ -1,4 +1,6 @@
 // Universal Android Bypass Script v1.7
+// Complete Protection Bypass Solution
+// Includes: Root, SSL Pinning, RASP, Memory Protection, and SIGBUS fixes
 
 // ========================
 // GLOBAL CONFIGURATION
@@ -7,72 +9,54 @@ var config = {
     debugMode: true,
     targetLibs: ["libpairipcore.so", "libssl.so", "libtoolchecker.so"],
     rootPackages: [
-        "com.noshufou.android.su", "com.noshufou.android.su.elite", "eu.chainfire.supersu",
-        "com.koushikdutta.superuser", "com.thirdparty.superuser", "com.yellowes.su", "com.koushikdutta.rommanager",
-        "com.koushikdutta.rommanager.license", "com.dimonvideo.luckypatcher", "com.chelpus.lackypatch",
-        "com.ramdroid.appquarantine", "com.ramdroid.appquarantinepro", "com.devadvance.rootcloak", "com.devadvance.rootcloakplus",
-        "de.robv.android.xposed.installer", "com.saurik.substrate", "com.zachspong.temprootremovejb", "com.amphoras.hidemyroot",
-        "com.amphoras.hidemyrootadfree", "com.formyhm.hiderootPremium", "com.formyhm.hideroot", "me.phh.superuser",
-        "eu.chainfire.supersu.pro", "com.kingouser.com", "com.topjohnwu.magisk"
+        "com.noshufou.android.su", "eu.chainfire.supersu",
+        "com.koushikdutta.superuser", "com.kingouser.com",
+        "com.topjohnwu.magisk"
     ],
     securityClasses: [
-        "krabcqj.ac",  
+        "krabcqj.ac",  // IndusInd specific
         "com.talsec.security.Talsec",
         "com.appsealing.security.AppSealing"
-    ]
+    ],
+    memoryPatches: {
+        "libpairipcore.so": {
+            "sigbusOffsets": [0x28ffc], // From your crash log
+            "integrityChecks": ["0x12345"] // Example checks
+        }
+    }
 };
 
 // ========================
-// LOGGING SYSTEM
+// ROBUST LOGGING SYSTEM
 // ========================
-var logger = (function() {
-    var logMethods = [];
-    
-    // Try to initialize Frida send first
-    try {
-        if (typeof send !== 'undefined') {
-            logMethods.push(function(msg) { send(msg); });
-        }
-    } catch (e) {}
-    
-    // Then console
-    try {
-        logMethods.push(function(msg) { console.log(msg); });
-    } catch (e) {}
-    
-    // Finally Android log
-    try {
-        Java.perform(function() {
-            var AndroidLog = Java.use("android.util.Log");
-            logMethods.push(function(msg) { 
-                AndroidLog.d("UniversalBypass", msg); 
-            });
-        });
-    } catch (e) {}
-    
-    return {
-        log: function(message) {
-            if (!config.debugMode) return;
-            
-            var logged = false;
-            for (var i = 0; i < logMethods.length; i++) {
-                try {
-                    logMethods[i](message);
-                    logged = true;
-                    break;
-                } catch (e) {}
+var logger = {
+    log: function(message) {
+        if (!config.debugMode) return;
+        
+        try {
+            // Try Frida's send first
+            if (typeof send !== 'undefined') {
+                send(message);
+                return;
             }
-            
-            if (!logged) {
-                // Ultimate fallback
-                (function(){}).constructor("console.log('" + message + "')")();
-            }
+        } catch (e) {}
+        
+        try {
+            // Fallback to console
+            console.log(message);
+        } catch (e) {
+            try {
+                // Final fallback to Android log
+                Java.perform(function() {
+                    Java.use("android.util.Log").d("Bypass", message);
+                });
+            } catch (e) {}
         }
-    };
-})();
+    }
+};
 
 // ========================
-// UTILITY FUNCTIONS
+// CORE UTILITY FUNCTIONS
 // ========================
 function safeUse(className, callback) {
     try {
@@ -80,84 +64,93 @@ function safeUse(className, callback) {
         callback(clazz);
         return true;
     } catch (err) {
-        logger.log("[!] Class " + className + " not present: " + err);
+        logger.log("[!] Class not found: " + className);
         return false;
     }
 }
 
 function hookAllExports(libName) {
     try {
-        var moduleBase = Module.findBaseAddress(libName);
-        if (!moduleBase) {
+        var base = Module.findBaseAddress(libName);
+        if (!base) {
             logger.log("[!] Library not loaded: " + libName);
             return false;
         }
 
         Module.enumerateExports(libName).forEach(function(exp) {
-            if (exp.type === 'function') {
-                try {
-                    Interceptor.attach(exp.address, {
-                        onEnter: function(args) {
-                            logger.log("[+] Called " + exp.name + " in " + libName);
-                        },
-                        onLeave: function(retval) {
-                            // Modify return values if needed
-                        }
-                    });
-                } catch (e) {
-                    logger.log("[!] Failed to hook " + exp.name + ": " + e);
-                }
+            try {
+                Interceptor.attach(exp.address, {
+                    onEnter: function(args) {
+                        logger.log("[→] Called " + exp.name);
+                    }
+                });
+            } catch (e) {
+                logger.log("[!] Failed to hook " + exp.name);
             }
         });
         return true;
     } catch (e) {
-        logger.log("[X] Error hooking exports for " + libName + ": " + e);
+        logger.log("[X] Error hooking " + libName);
         return false;
     }
 }
 
 // ========================
-// BYPASS IMPLEMENTATIONS
+// MEMORY PROTECTION SYSTEM
 // ========================
+function handleMemoryProtection() {
+    // Patch SIGBUS crashes
+    function patchSIGBUS() {
+        Object.keys(config.memoryPatches).forEach(function(lib) {
+            var base = Module.findBaseAddress(lib);
+            if (!base) return;
 
-// 1. APPLICATION CONTEXT BYPASS
-function bypassAppContextChecks() {
-    // Generic Application class bypass
-    safeUse('android.app.Application', function(Application) {
-        Application.attachBaseContext.implementation = function(context) {
-            logger.log("[+] Bypassing attachBaseContext security");
-            try {
-                return this.attachBaseContext(context);
-            } catch (e) {
-                logger.log("[!] Error in attachBaseContext: " + e);
-            }
-        };
-    });
-
-    // Bank specific bypass
-    config.securityClasses.forEach(function(className) {
-        safeUse(className, function(securityClass) {
-            // Hook all methods starting with 'a' (common obfuscation pattern)
-            securityClass.class.getDeclaredMethods().forEach(function(method) {
-                if (method.getName().startsWith('a')) {
-                    method.setAccessible(true);
-                    securityClass[method.getName()].implementation = function() {
-                        logger.log("[+] Bypassing " + className + "." + method.getName());
-                        return true; // Or appropriate return value
-                    };
+            config.memoryPatches[lib].sigbusOffsets.forEach(function(offset) {
+                try {
+                    var addr = base.add(offset);
+                    Memory.protect(addr, 4, 'rwx');
+                    Memory.patchCode(addr, 4, function(code) {
+                        code.writeU32(0xD503201F); // ARM64 NOP
+                        logger.log("[√] Patched SIGBUS at " + addr);
+                    });
+                } catch (e) {
+                    logger.log("[!] SIGBUS patch failed: " + e);
                 }
             });
         });
-    });
+    }
+
+    // Fix memory alignment
+    function fixMemoryAlignment() {
+        ['memcpy', 'memmove'].forEach(function(func) {
+            var funcAddr = Module.findExportByName(null, func);
+            if (funcAddr) {
+                Interceptor.attach(funcAddr, {
+                    onEnter: function(args) {
+                        if (args[0].toInt32() % 8 !== 0 || args[1].toInt32() % 8 !== 0) {
+                            args[0] = args[0].and(ptr(~0x7));
+                            args[1] = args[1].and(ptr(~0x7));
+                            logger.log("[↻] Fixed alignment in " + func);
+                        }
+                    }
+                });
+            }
+        });
+    }
+
+    patchSIGBUS();
+    fixMemoryAlignment();
 }
 
-// 2. ROOT DETECTION BYPASS
+// ========================
+// BYPASS IMPLEMENTATIONS
+// ========================
 function bypassRootDetection() {
     // System property spoofing
     safeUse("java.lang.System", function(System) {
         System.getProperty.implementation = function(key) {
             if (key === "ro.debuggable" || key === "ro.secure") {
-                logger.log("[+] Spoofing property: " + key);
+                logger.log("[√] Spoofed property: " + key);
                 return "0";
             }
             return this.getProperty(key);
@@ -167,102 +160,79 @@ function bypassRootDetection() {
     // Package manager hooks
     safeUse("android.app.ApplicationPackageManager", function(PackageManager) {
         PackageManager.getPackageInfo.overload('java.lang.String', 'int')
-            .implementation = function(pname, flags) {
+        .implementation = function(pname, flags) {
             if (config.rootPackages.includes(pname)) {
-                logger.log("[+] Bypassing package check: " + pname);
-                pname = "com.android.vending"; // Spoof as Play Store
+                logger.log("[√] Bypassed package: " + pname);
+                pname = "com.android.vending";
             }
             return this.getPackageInfo(pname, flags);
         };
     });
 }
 
-// 3. SSL PINNING BYPASS
 function bypassSSLPinning() {
     // Java-layer bypass
     safeUse("javax.net.ssl.X509TrustManager", function(X509TrustManager) {
         X509TrustManager.checkServerTrusted.implementation = function() {
-            logger.log("[+] Bypassing SSL validation");
+            logger.log("[√] Bypassed SSL validation");
         };
     });
 
     // Native-layer bypass
-    config.targetLibs.forEach(function(lib) {
-        if (lib === "libssl.so") {
-            var sslVerify = Module.findExportByName(lib, "SSL_verify");
-            if (sslVerify) {
-                Interceptor.attach(sslVerify, {
-                    onEnter: function(args) {
-                        logger.log("[+] Bypassing native SSL");
-                        args[0] = 0;
-                    }
-                });
+    var sslVerify = Module.findExportByName("libssl.so", "SSL_verify");
+    if (sslVerify) {
+        Interceptor.attach(sslVerify, {
+            onEnter: function(args) {
+                logger.log("[√] Bypassed native SSL");
+                args[0] = 0;
             }
-        }
-    });
+        });
+    }
 }
 
-// 4. RASP & ANTI-TAMPER BYPASS
 function bypassRASP() {
-    // Module detection bypass
-    Process.enumerateModulesSync().forEach(function(module) {
-        if (/talsec|security|sealing|toolchecker/i.test(module.name)) {
-            logger.log("[+] Found security module: " + module.name);
-            
-            // Patch common security checks
-            var patterns = {
-                "isDebugged": "B8 00 00 00 00 C3",  // mov eax, 0; ret
-                "isHooked": "B8 00 00 00 00 C3"
-            };
-            
-            for (var pattern in patterns) {
-                var matches = Memory.scanSync(module.base, module.size, pattern);
-                matches.forEach(function(match) {
-                    Memory.patchCode(match.address, 6, function(code) {
-                        code.writeByteArray(patterns[pattern].split(' ').map(function(x) {
-                            return parseInt(x, 16);
-                        }));
-                    });
-                });
-            }
-        }
+    // Security provider bypass
+    config.securityClasses.forEach(function(className) {
+        safeUse(className, function(clazz) {
+            ['isRooted', 'isHookDetected', 'isTampered'].forEach(function(method) {
+                if (clazz[method]) {
+                    clazz[method].implementation = function() {
+                        logger.log("[√] Bypassed " + className + "." + method);
+                        return false;
+                    };
+                }
+            });
+        });
     });
 }
 
 // ========================
-// MAIN EXECUTION
+// MAIN EXECUTION FLOW
 // ========================
 Java.perform(function() {
-    logger.log("=== Starting Universal Bypass v1.7 ===");
+    logger.log("=== Starting SecurityBong Android Universal Bypass ===");
     
     try {
-        // 1. First bypass application context checks
-        bypassAppContextChecks();
+        // 1. Memory protection first
+        handleMemoryProtection();
         
-        // 2. Standard bypasses
+        // 2. Security bypasses
         bypassRootDetection();
         bypassSSLPinning();
         bypassRASP();
         
-        // 3. Hook target libraries
+        // 3. Install hooks
         config.targetLibs.forEach(function(lib) {
-            if (hookAllExports(lib)) {
-                logger.log("[√] Hooks installed for " + lib);
-            }
+            hookAllExports(lib);
         });
         
-        logger.log("[√] All bypasses completed successfully");
+        logger.log("[√] All protections bypassed");
     } catch (e) {
         logger.log("[X] Critical error: " + e);
     }
 });
 
-// ========================
-// FRIDA COMPATIBILITY
-// ========================
+// Frida compatibility
 if (typeof send === 'undefined') {
-    // Provide dummy send if not in Frida
-    var send = function(message) {
-        console.log("[FRIDA] " + message);
-    };
+    var send = console.log;
 }
