@@ -306,7 +306,7 @@ function hookWhenAvailable(libName, callback, retries = 5) {
 // MAIN EXECUTION
 // ========================
 Java.perform(function() {
-    log("=== Starting Universal Bypass ===", "INFO");
+    log("=== Starting SecurityBong Android Universal Bypass ===", "INFO");
     
     // 1. Apply all critical bypasses immediately
     applyRootBypasses();
