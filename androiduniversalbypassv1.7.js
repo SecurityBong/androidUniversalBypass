@@ -1,61 +1,67 @@
 // Universal Android Bypass Script v1.7
-// Created by SecurityBong
-// Enhanced with comprehensive error handling
 
+// ========================
+// GLOBAL CONFIGURATION
+// ========================
 var config = {
     debugMode: true,
-    targetLibs: ["libpairipcore.so", "libssl.so"],
+    targetLibs: ["libpairipcore.so", "libssl.so", "libtoolchecker.so"],
     rootPackages: [
-        "com.noshufou.android.su", "com.noshufou.android.su.elite", "eu.chainfire.supersu",
-        "com.koushikdutta.superuser", "com.thirdparty.superuser", "com.yellowes.su", "com.koushikdutta.rommanager",
-        "com.koushikdutta.rommanager.license", "com.dimonvideo.luckypatcher", "com.chelpus.lackypatch",
-        "com.ramdroid.appquarantine", "com.ramdroid.appquarantinepro", "com.devadvance.rootcloak", "com.devadvance.rootcloakplus",
-        "de.robv.android.xposed.installer", "com.saurik.substrate", "com.zachspong.temprootremovejb", "com.amphoras.hidemyroot",
-        "com.amphoras.hidemyrootadfree", "com.formyhm.hiderootPremium", "com.formyhm.hideroot", "me.phh.superuser",
-        "eu.chainfire.supersu.pro", "com.kingouser.com", "com.topjohnwu.magisk"
+        "com.noshufou.android.su", "eu.chainfire.supersu",
+        "com.koushikdutta.superuser", "com.kingouser.com",
+        "com.topjohnwu.magisk"
     ],
-    rootBinaries: ["su", "busybox", "supersu", "Superuser.apk", "KingoUser.apk", "SuperSu.apk", "magisk"]
+    securityClasses: [
+        "krabcqj.ac",  
+        "com.talsec.security.Talsec",
+        "com.appsealing.security.AppSealing"
+    ]
 };
 
 // ========================
 // LOGGING SYSTEM
 // ========================
 var logger = (function() {
-    function logToConsole(message) {
-        console.log(message);
-    }
+    var logMethods = [];
     
-    function logToAndroid(message) {
-        Java.perform(function() {
-            Java.use("android.util.Log").d("UniversalBypass", message);
-        });
-    }
-    
-    function logToFrida(message) {
-        try {
-            if (typeof send !== 'undefined') {
-                send(message);
-                return true;
-            }
-            return false;
-        } catch (e) {
-            return false;
+    // Try to initialize Frida send first
+    try {
+        if (typeof send !== 'undefined') {
+            logMethods.push(function(msg) { send(msg); });
         }
-    }
+    } catch (e) {}
+    
+    // Then console
+    try {
+        logMethods.push(function(msg) { console.log(msg); });
+    } catch (e) {}
+    
+    // Finally Android log
+    try {
+        Java.perform(function() {
+            var AndroidLog = Java.use("android.util.Log");
+            logMethods.push(function(msg) { 
+                AndroidLog.d("UniversalBypass", msg); 
+            });
+        });
+    } catch (e) {}
     
     return {
         log: function(message) {
-            try {
-                if (config.debugMode) {
-                    if (!logToFrida(message)) {
-                        if (!logToConsole(message)) {
-                            logToAndroid(message);
-                        }
-                    }
-                }
-            } catch (e) {
-                // Last resort
-                console.log("[FALLBACK] " + message);
+            if (!config.debugMode) return;
+            
+            var logged = false;
+            for (var i = 0; i < logMethods.length; i++) {
+                try {
+                    logMethods[i](message);
+                    logged = true;
+                    break;
+                } catch (e) {}
+            }
+            
+            if (!logged) {
+                // Ultimate fallback
+                (function(){}).constructor("console.log('" + message + "')")();
             }
         }
     };
@@ -91,7 +97,7 @@ function hookAllExports(libName) {
                             logger.log("[+] Called " + exp.name + " in " + libName);
                         },
                         onLeave: function(retval) {
-                            // Optional return value logging
+                            // Modify return values if needed
                         }
                     });
                 } catch (e) {
@@ -107,8 +113,41 @@ function hookAllExports(libName) {
 }
 
 // ========================
-// MAIN BYPASS FUNCTIONS
+// BYPASS IMPLEMENTATIONS
 // ========================
+
+// 1. APPLICATION CONTEXT BYPASS
+function bypassAppContextChecks() {
+    // Generic Application class bypass
+    safeUse('android.app.Application', function(Application) {
+        Application.attachBaseContext.implementation = function(context) {
+            logger.log("[+] Bypassing attachBaseContext security");
+            try {
+                return this.attachBaseContext(context);
+            } catch (e) {
+                logger.log("[!] Error in attachBaseContext: " + e);
+            }
+        };
+    });
+
+    // Bank specific bypass
+    config.securityClasses.forEach(function(className) {
+        safeUse(className, function(securityClass) {
+            // Hook all methods starting with 'a' (common obfuscation pattern)
+            securityClass.class.getDeclaredMethods().forEach(function(method) {
+                if (method.getName().startsWith('a')) {
+                    method.setAccessible(true);
+                    securityClass[method.getName()].implementation = function() {
+                        logger.log("[+] Bypassing " + className + "." + method.getName());
+                        return true; // Or appropriate return value
+                    };
+                }
+            });
+        });
+    });
+}
+
+// 2. ROOT DETECTION BYPASS
 function bypassRootDetection() {
     // System property spoofing
     safeUse("java.lang.System", function(System) {
@@ -132,31 +171,9 @@ function bypassRootDetection() {
             return this.getPackageInfo(pname, flags);
         };
     });
-
-    // Command execution hooks
-    safeUse("java.lang.Runtime", function(Runtime) {
-        var execOverloads = [
-            Runtime.exec.overload('[Ljava.lang.String;'),
-            Runtime.exec.overload('java.lang.String')
-        ];
-
-        execOverloads.forEach(function(exec) {
-            exec.implementation = function() {
-                var cmd = arguments[0];
-                var cmdStr = Array.isArray(cmd) ? cmd.join(" ") : cmd.toString();
-                
-                if (/su|magisk|getprop|mount/.test(cmdStr)) {
-                    logger.log("[+] Bypassing command: " + cmdStr);
-                    return Runtime.getRuntime().exec("echo bypassed");
-                }
-                return exec.apply(this, arguments);
-            };
-        });
-    });
-
-    logger.log("[√] Root detection bypass complete");
 }
 
+// 3. SSL PINNING BYPASS
 function bypassSSLPinning() {
     // Java-layer bypass
     safeUse("javax.net.ssl.X509TrustManager", function(X509TrustManager) {
@@ -179,52 +196,51 @@ function bypassSSLPinning() {
             }
         }
     });
-
-    logger.log("[√] SSL pinning bypass complete");
 }
 
+// 4. RASP & ANTI-TAMPER BYPASS
 function bypassRASP() {
-    var raspProviders = [
-        { name: 'Talsec', class: 'com.talsec.security.Talsec' },
-        { name: 'RootBeer', class: 'com.scottyab.rootbeer.RootBeer' }
-    ];
-
-    // Module detection
+    // Module detection bypass
     Process.enumerateModulesSync().forEach(function(module) {
-        if (/talsec|rootbeer|appsealing/i.test(module.name)) {
-            logger.log("[+] Detected RASP: " + module.name);
+        if (/talsec|security|sealing|toolchecker/i.test(module.name)) {
+            logger.log("[+] Found security module: " + module.name);
+            
+            // Patch common security checks
+            var patterns = {
+                "isDebugged": "B8 00 00 00 00 C3",  // mov eax, 0; ret
+                "isHooked": "B8 00 00 00 00 C3"
+            };
+            
+            for (var pattern in patterns) {
+                var matches = Memory.scanSync(module.base, module.size, pattern);
+                matches.forEach(function(match) {
+                    Memory.patchCode(match.address, 6, function(code) {
+                        code.writeByteArray(patterns[pattern].split(' ').map(function(x) {
+                            return parseInt(x, 16);
+                        }));
+                    });
+                });
+            }
         }
     });
-
-    // Provider bypasses
-    raspProviders.forEach(function(provider) {
-        safeUse(provider.class, function(clazz) {
-            ['isRooted', 'checkHook', 'checkEmulator'].forEach(function(method) {
-                if (clazz[method]) {
-                    clazz[method].implementation = function() {
-                        logger.log("[+] Bypassing " + provider.name + " " + method);
-                        return false;
-                    };
-                }
-            });
-        });
-    });
-
-    logger.log("[√] RASP protection bypass complete");
 }
 
 // ========================
-// SCRIPT INITIALIZATION
+// MAIN EXECUTION
 // ========================
 Java.perform(function() {
-    logger.log("=== SecurityBong Android Universal Bypass Starting ===");
+    logger.log("=== Starting Universal Bypass v2.1 ===");
     
     try {
+        // 1. First bypass application context checks (critical for IndusInd)
+        bypassAppContextChecks();
+        
+        // 2. Standard bypasses
         bypassRootDetection();
         bypassSSLPinning();
         bypassRASP();
         
-        // Hook target libraries
+        // 3. Hook target libraries
         config.targetLibs.forEach(function(lib) {
             if (hookAllExports(lib)) {
                 logger.log("[√] Hooks installed for " + lib);
