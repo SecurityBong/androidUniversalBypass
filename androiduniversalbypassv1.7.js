@@ -5,6 +5,113 @@ Java.perform(function () {
     function send(message) {
         console.log(message);
     }
+// Android Universal Bypass v1.7 - Enhanced with libpairipcore.so Patching
+Java.perform(function () {
+    console.log("[+] Android Universal Bypass v1.7 Loaded");
+
+    // --------------------- Root Detection Bypass ---------------------
+    var System = Java.use("java.lang.System");
+    System.getProperty.implementation = function (key) {
+        if (key === "ro.debuggable" || key === "ro.secure") {
+            console.log("[+] Root detection bypassed for " + key);
+            return "0";
+        }
+        return this.getProperty(key);
+    };
+
+    var SecureSettings = Java.use("android.provider.Settings$Secure");
+    SecureSettings.getInt.overload("android.content.ContentResolver", "java.lang.String").implementation = function (resolver, name) {
+        if (name === "adb_enabled") {
+            console.log("[+] ADB detection bypassed");
+            return 0;
+        }
+        return this.getInt(resolver, name);
+    };
+
+    // --------------------- SSL Pinning Bypass ---------------------
+    var X509TrustManager = Java.use("javax.net.ssl.X509TrustManager");
+    X509TrustManager.checkServerTrusted.implementation = function (chain, authType) {
+        console.log("[+] SSL Pinning bypassed");
+    };
+
+    var HostnameVerifier = Java.use("javax.net.ssl.HostnameVerifier");
+    HostnameVerifier.verify.implementation = function (hostname, session) {
+        console.log("[+] Hostname verification bypassed for: " + hostname);
+        return true;
+    };
+
+    // --------------------- OTP/SMS Hooking ---------------------
+    var SmsListener = Java.use("android.telephony.SmsManager");
+    SmsListener.sendTextMessage.overload("java.lang.String", "java.lang.String", "java.lang.String", "android.app.PendingIntent", "android.app.PendingIntent").implementation = function (dest, sc, text, sentIntent, deliveryIntent) {
+        console.log("[+] OTP Intercepted: " + text);
+        return this.sendTextMessage(dest, sc, text, sentIntent, deliveryIntent);
+    };
+
+    // --------------------- Hooking libpairipcore.so ---------------------
+    var libName = "libpairipcore.so";
+    var moduleBase = Module.findBaseAddress(libName);
+
+    if (moduleBase) {
+        console.log("[+] " + libName + " loaded at " + moduleBase);
+        
+        // Hook all exported functions
+        Module.enumerateExports(libName).forEach(function (exported) {
+            if (exported.type === "function") {
+                Interceptor.attach(exported.address, {
+                    onEnter: function (args) {
+                        console.log("[+] Hooked " + exported.name + " at " + exported.address);
+                        for (var i = 0; i < 4; i++) {
+                            console.log("    Arg" + i + ": " + args[i].toInt32());
+                        }
+                    },
+                    onLeave: function (retval) {
+                        console.log("[+] " + exported.name + " returned: " + retval.toInt32());
+                    }
+                });
+            }
+        });
+
+        // --------------------- Realign Pointers ---------------------
+        Interceptor.attach(Module.findExportByName(null, "memcpy"), {
+            onEnter: function (args) {
+                if ((args[0].toInt32() & 0x3) !== 0) {
+                    console.log("[!] Misaligned memcpy detected! Realigning pointer.");
+                    args[0] = ptr(args[0].toInt32() & ~0x3);
+                }
+            }
+        });
+
+        Interceptor.attach(Module.findExportByName(null, "memmove"), {
+            onEnter: function (args) {
+                if ((args[0].toInt32() & 0x3) !== 0) {
+                    console.log("[!] Misaligned memmove detected! Realigning pointer.");
+                    args[0] = ptr(args[0].toInt32() & ~0x3);
+                }
+            }
+        });
+
+        // --------------------- Patch Faulty Instructions ---------------------
+        var faultyInstructionAddress = ptr(moduleBase.add(0x67844)); // Offset causing SIGBUS error
+        Memory.protect(faultyInstructionAddress, 4, "rwx");
+
+        Memory.patchCode(faultyInstructionAddress, 4, function (code) {
+            code.writeU32(0xE320F000); // NOP to prevent crash
+            console.log("[+] Patched faulty instruction at 0x67844");
+        });
+
+        // --------------------- Bypass Memory Integrity Checks ---------------------
+        Interceptor.attach(Module.findExportByName(libName, "check_memory_integrity"), {
+            onEnter: function (args) {
+                console.log("[+] Memory integrity check bypassed!");
+                args[0].writeInt(1); // Set integrity check result to valid
+            }
+        });
+    } else {
+        console.log("[!] Failed to load " + libName);
+    }
+});
+
+console.log("[+] All Enhancements Applied Successfully!");
 
 // --- Hook Memory Operations to Detect Misalignment ---
 Interceptor.attach(Module.findExportByName(null, "malloc"), {
