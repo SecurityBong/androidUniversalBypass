@@ -93,9 +93,13 @@ Java.perform(function () {
 
             // Root package/binary detection bypass
             var rootPackages = [
-                "com.noshufou.android.su", "eu.chainfire.supersu",
-                "com.koushikdutta.superuser", "com.kingouser.com",
-                "com.topjohnwu.magisk"
+                "com.noshufou.android.su", "com.noshufou.android.su.elite", "eu.chainfire.supersu",
+        "com.koushikdutta.superuser", "com.thirdparty.superuser", "com.yellowes.su", "com.koushikdutta.rommanager",
+        "com.koushikdutta.rommanager.license", "com.dimonvideo.luckypatcher", "com.chelpus.lackypatch",
+        "com.ramdroid.appquarantine", "com.ramdroid.appquarantinepro", "com.devadvance.rootcloak", "com.devadvance.rootcloakplus",
+        "de.robv.android.xposed.installer", "com.saurik.substrate", "com.zachspong.temprootremovejb", "com.amphoras.hidemyroot",
+        "com.amphoras.hidemyrootadfree", "com.formyhm.hiderootPremium", "com.formyhm.hideroot", "me.phh.superuser",
+        "eu.chainfire.supersu.pro", "com.kingouser.com", "com.topjohnwu.magisk"
             ];
 
             var rootBinaries = ["su", "busybox", "magisk"];
