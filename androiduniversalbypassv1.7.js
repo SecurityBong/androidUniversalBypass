@@ -6,6 +6,9 @@ Java.perform(function () {
         console.log(message);
     }}
 
+// Print script creator name
+    send("Script created by " + scriptCreator);
+
     // --------------------- Root Detection Bypass ---------------------
     var System = Java.use("java.lang.System");
     System.getProperty.implementation = function (key) {
@@ -218,9 +221,6 @@ console.log("[+] All enhancements applied successfully.");
             send("Class " + className + " not present, proceeding with other checks.");
         }
     }
-
-    // Print script creator name
-    send("Script created by " + scriptCreator);
 
     // Additional Root Detection Bypass Techniques
     var System = Java.use("java.lang.System");
