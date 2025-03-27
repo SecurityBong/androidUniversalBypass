@@ -14,7 +14,7 @@ var config = {
         "com.amphoras.hidemyrootadfree", "com.formyhm.hiderootPremium", "com.formyhm.hideroot", "me.phh.superuser",
         "eu.chainfire.supersu.pro", "com.kingouser.com", "com.topjohnwu.magisk"
     ],
-    rootBinaries: ["su", "busybox", "magisk"]
+    rootBinaries: ["su", "busybox", "supersu", "Superuser.apk", "KingoUser.apk", "SuperSu.apk", "magisk"]
 };
 
 // ========================
