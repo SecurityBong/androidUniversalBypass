@@ -108,7 +108,6 @@ Java.perform(function () {
     }
 });
 
-console.log("[+] All Enhancements Applied Successfully!");
 
 // --- Hook Memory Operations to Detect Misalignment ---
 Interceptor.attach(Module.findExportByName(null, "malloc"), {
